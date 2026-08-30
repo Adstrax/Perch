@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-binutils
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          windres perch.rc -O coff -o perch_res.o
+          g++ -std=c++17 -O2 -mwindows -municode -DUNICODE -D_UNICODE -static -static-libgcc -static-libstdc++ main.cpp perch_res.o -o Perch.exe -lgdiplus -ldwmapi -liphlpapi -lshell32 -luser32 -lgdi32 -lole32 -ladvapi32
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Perch.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
