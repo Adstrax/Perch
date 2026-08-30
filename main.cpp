@@ -154,16 +154,13 @@ private:
 };
 
 // ---------------- 格式化 ----------------
-static std::wstring FormatSpeed(double bps)
+static void FormatSpeed(double bps, std::wstring& value, std::wstring& unit)
 {
-    wchar_t buf[40];
-    if (bps < 1024.0*1024.0)
-        swprintf(buf, 40, L"%.1f  K/s", bps/1024.0);
-    else if (bps < 1024.0*1024.0*1024.0)
-        swprintf(buf, 40, L"%.1f  M/s", bps/(1024.0*1024.0));
-    else
-        swprintf(buf, 40, L"%.2f  G/s", bps/(1024.0*1024.0*1024.0));
-    return buf;
+    wchar_t vb[40];
+    if (bps < 1024.0*1024.0) { swprintf(vb,40,L"%.1f", bps/1024.0); unit = L"K/s"; }
+    else if (bps < 1024.0*1024.0*1024.0) { swprintf(vb,40,L"%.1f", bps/(1024.0*1024.0)); unit = L"M/s"; }
+    else { swprintf(vb,40,L"%.2f", bps/(1024.0*1024.0*1024.0)); unit = L"G/s"; }
+    value = vb;
 }
 
 static std::wstring FormatPct(unsigned int pct){ wchar_t b[16]; swprintf(b,16,L"%u%%",pct); return b; }
@@ -184,7 +181,7 @@ static float g_dpi = 96.0f;
 static const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const wchar_t* kRunValue = L"Perch";
 
-static const int CW_FLOAT = 92, CW_DOCK = 72, CH = 152;
+static const int CW_FLOAT = 70, CW_DOCK = 62, CH = 166;
 static const int RING = 26, RING_TH = 4, DOT = 8;
 static const int CAP_W = 11, CAP_H = 34;
 
@@ -247,30 +244,28 @@ static void ApplyModeSize()
 }
 
 // 画一行 "↑ 值 单位"(单行,紧凑)
-static void DrawSpeedRow(Graphics& g, float cx, float y, float rowW, const std::wstring& value, BYTE arrR, BYTE arrG, BYTE arrB)
+static void DrawSpeedRow(Graphics& g, float cx, float y, float rowW, const std::wstring& value, const std::wstring& unit, BYTE arrR, BYTE arrG, BYTE arrB)
 {
     float sc = g_dpi/96.0f;
-    Font fArrow(L"Segoe UI Symbol", 10.0f*sc, FontStyleRegular, UnitPixel, nullptr);
-    Font fValue(L"Segoe UI", 13.5f*sc, FontStyleBold, UnitPixel, nullptr);
+    Font fArrow(L"Segoe UI Symbol", 11.0f*sc, FontStyleRegular, UnitPixel, nullptr);
+    Font fValue(L"Segoe UI", 14.0f*sc, FontStyleBold, UnitPixel, nullptr);
     Font fUnit(L"Segoe UI", 10.5f*sc, FontStyleRegular, UnitPixel, nullptr);
     SolidBrush aBrush(Color(255,arrR,arrG,arrB));
     SolidBrush vBrush(Color(255,0xFD,0xFD,0xFD));
     SolidBrush uBrush(Color(255,0xB4,0xC2,0xCE));
     wchar_t arrow[3] = { L'\u2191', L' ', L'\0' };
-    float lineH = Px(17.0f*sc);
+    float lineH = Px(19.0f*sc);
     float gap = Px(3.0f*sc);
-    RectF boxA, boxV, boxU;
+    RectF boxA, boxV;
     g.MeasureString(arrow, -1, &fArrow, PointF(0,0), &boxA);
     g.MeasureString(value.c_str(), -1, &fValue, PointF(0,0), &boxV);
-    g.MeasureString(L"K/s", -1, &fUnit, PointF(0,0), &boxU);
-    float aw = boxA.Width, vw = boxV.Width, uw = boxU.Width;
-    float total = aw + gap + vw + gap + uw;
+    float total = boxA.Width + gap + boxV.Width;
     float x = cx - total/2.0f;
     StringFormat left; left.SetAlignment(StringAlignmentNear); left.SetLineAlignment(StringAlignmentCenter);
-    g.DrawString(arrow, -1, &fArrow, RectF(x, y, aw, lineH), &left, &aBrush); x += aw + gap;
-    g.DrawString(value.c_str(), -1, &fValue, RectF(x, y, vw, lineH), &left, &vBrush); x += vw + gap;
-    g.DrawString(L"K/s", -1, &fUnit, RectF(x, y, uw, lineH), &left, &uBrush);
-    (void)rowW;
+    g.DrawString(arrow, -1, &fArrow, RectF(x, y, boxA.Width, lineH), &left, &aBrush); x += boxA.Width + gap;
+    g.DrawString(value.c_str(), -1, &fValue, RectF(x, y, boxV.Width, lineH), &left, &vBrush);
+    StringFormat mid; mid.SetAlignment(StringAlignmentCenter); mid.SetLineAlignment(StringAlignmentNear);
+    g.DrawString(unit.c_str(), -1, &fUnit, RectF(cx - rowW/2.0f, y + lineH, rowW, Px(15*sc)), &mid, &uBrush);
 }
 
 static void FillRoundedPanel(Graphics& g, float x, float y, float w, float h, float rTL, float rTR, float rBR, float rBL, const Brush& br)
@@ -343,13 +338,15 @@ static void DrawContent(Graphics& g, int w, int h)
     {
         float capW = CAP_W*sc, capH = CAP_H*sc;
         float cy = y;
+        float capX = cx - capW/2.0f;
         SolidBrush capBg(Color(0x30,0xFF,0xFF,0xFF));
-        g.FillRectangle(&capBg, cx-capW/2.0f, cy, capW, capH);
+        FillRoundedPanel(g, capX, cy, capW, capH, capW/2.0f, capW/2.0f, capW/2.0f, capW/2.0f, capBg);
         float fh = capH * (float)(g_memLoad/100.0);
         if (fh > 0.5f)
         {
             SolidBrush fs(accent);
-            g.FillRectangle(&fs, cx-capW/2.0f, cy+capH-fh, capW, fh);
+            float fr = std::min(capW/2.0f, fh/2.0f);
+            FillRoundedPanel(g, capX, cy+capH-fh, capW, fh, fr, fr, fr, fr, fs);
         }
         y = cy + capH + Px(4*sc);
     }
@@ -360,10 +357,12 @@ static void DrawContent(Graphics& g, int w, int h)
     g.FillRectangle(&sep, (REAL)Px(8*sc), (REAL)y, (REAL)(w - Px(16*sc)), (REAL)(1.0f*sc));
     y += Px(6*sc);
 
-    DrawSpeedRow(g, cx, y, rowW, ::FormatSpeed(g_downBps), CyanR(), CyanG(), CyanB());
-    y += Px(24*sc);
-    DrawSpeedRow(g, cx, y, rowW, ::FormatSpeed(g_upBps), ar, ag, ab);
-    y += Px(24*sc);
+    std::wstring dv, du; FormatSpeed(g_downBps, dv, du);
+    DrawSpeedRow(g, cx, y, rowW, dv, du, CyanR(), CyanG(), CyanB());
+    y += Px(34*sc);
+    std::wstring uv, uu; FormatSpeed(g_upBps, uv, uu);
+    DrawSpeedRow(g, cx, y, rowW, uv, uu, ar, ag, ab);
+    y += Px(34*sc);
 
     g.FillRectangle(&sep, (REAL)Px(8*sc), (REAL)y, (REAL)(w - Px(16*sc)), (REAL)(1.0f*sc));
     y += Px(6*sc);
