@@ -181,9 +181,9 @@ static float g_dpi = 96.0f;
 static const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const wchar_t* kRunValue = L"Perch";
 
-static const int CW_FLOAT = 70, CW_DOCK = 62, CH = 166;
-static const int RING = 26, RING_TH = 4, DOT = 8;
-static const int CAP_W = 11, CAP_H = 34;
+static const int CW_FLOAT = 36, CW_DOCK = 32, CH = 196;
+static const int RING = 26, RING_TH = 4, DOT = 9;
+static const int CAP_W = 11, CAP_H = 30;
 
 static int Px(float v){ return (int)std::lround(v); }
 
@@ -244,28 +244,33 @@ static void ApplyModeSize()
 }
 
 // 画一行 "↑ 值 单位"(单行,紧凑)
-static void DrawSpeedRow(Graphics& g, float cx, float y, float rowW, const std::wstring& value, const std::wstring& unit, BYTE arrR, BYTE arrG, BYTE arrB)
+static void DrawSpeedRow(Graphics& g, float cx, float y, float rowW, const std::wstring& value, const std::wstring& unit, bool up, BYTE arrR, BYTE arrG, BYTE arrB)
 {
     float sc = g_dpi/96.0f;
-    Font fArrow(L"Segoe UI Symbol", 11.0f*sc, FontStyleRegular, UnitPixel, nullptr);
-    Font fValue(L"Segoe UI", 14.0f*sc, FontStyleBold, UnitPixel, nullptr);
-    Font fUnit(L"Segoe UI", 10.5f*sc, FontStyleRegular, UnitPixel, nullptr);
+    Font fValue(L"Segoe UI", 10.0f*sc, FontStyleBold, UnitPixel, nullptr);
+    Font fUnit(L"Segoe UI", 10.0f*sc, FontStyleBold, UnitPixel, nullptr);
     SolidBrush aBrush(Color(255,arrR,arrG,arrB));
     SolidBrush vBrush(Color(255,0xFD,0xFD,0xFD));
     SolidBrush uBrush(Color(255,0xB4,0xC2,0xCE));
-    wchar_t arrow[3] = { L'\u2191', L' ', L'\0' };
-    float lineH = Px(19.0f*sc);
+    float lineH = Px(16.0f*sc);
     float gap = Px(3.0f*sc);
-    RectF boxA, boxV;
-    g.MeasureString(arrow, -1, &fArrow, PointF(0,0), &boxA);
+    RectF boxV;
     g.MeasureString(value.c_str(), -1, &fValue, PointF(0,0), &boxV);
-    float total = boxA.Width + gap + boxV.Width;
+    float aw = Px(6.0f*sc);
+    float total = aw + gap + boxV.Width;
     float x = cx - total/2.0f;
+    // 实心三角箭头(更清晰)
+    float triCx = x + aw/2.0f;
+    float midY = y + lineH/2.0f;
+    float ah = Px(7.0f*sc);
+    PointF pts[3];
+    if (up) { pts[0]=PointF(triCx-aw/2.0f, midY+ah/2.0f); pts[1]=PointF(triCx+aw/2.0f, midY+ah/2.0f); pts[2]=PointF(triCx, midY-ah/2.0f); }
+    else    { pts[0]=PointF(triCx-aw/2.0f, midY-ah/2.0f); pts[1]=PointF(triCx+aw/2.0f, midY-ah/2.0f); pts[2]=PointF(triCx, midY+ah/2.0f); }
+    g.FillPolygon(&aBrush, pts, 3);
     StringFormat left; left.SetAlignment(StringAlignmentNear); left.SetLineAlignment(StringAlignmentCenter);
-    g.DrawString(arrow, -1, &fArrow, RectF(x, y, boxA.Width, lineH), &left, &aBrush); x += boxA.Width + gap;
-    g.DrawString(value.c_str(), -1, &fValue, RectF(x, y, boxV.Width, lineH), &left, &vBrush);
+    g.DrawString(value.c_str(), -1, &fValue, RectF(x + aw + gap, y, boxV.Width, lineH), &left, &vBrush);
     StringFormat mid; mid.SetAlignment(StringAlignmentCenter); mid.SetLineAlignment(StringAlignmentNear);
-    g.DrawString(unit.c_str(), -1, &fUnit, RectF(cx - rowW/2.0f, y + lineH, rowW, Px(15*sc)), &mid, &uBrush);
+    g.DrawString(unit.c_str(), -1, &fUnit, RectF(cx - rowW/2.0f, y + lineH, rowW, Px(13*sc)), &mid, &uBrush);
 }
 
 static void FillRoundedPanel(Graphics& g, float x, float y, float w, float h, float rTL, float rTR, float rBR, float rBL, const Brush& br)
@@ -285,6 +290,58 @@ static void FillRoundedPanel(Graphics& g, float x, float y, float w, float h, fl
     g.FillPath(&br, &p);
 }
 
+
+
+static void StrokeRoundedPanel(Graphics& g, float x, float y, float w, float h, float rTL, float rTR, float rBR, float rBL, const Pen& pen)
+{
+    GraphicsPath p;
+    float dTL=rTL*2, dTR=rTR*2, dBR=rBR*2, dBL=rBL*2;
+    p.StartFigure();
+    p.AddLine(x + std::max(rTL,0.1f), y, x + w - std::max(rTR,0.1f), y);
+    if (rTR>0.01f) p.AddArc(x+w-dTR, y, dTR, dTR, 270, 90);
+    p.AddLine(x+w, y + std::max(rTR,0.1f), x+w, y + h - std::max(rBR,0.1f));
+    if (rBR>0.01f) p.AddArc(x+w-dBR, y+h-dBR, dBR, dBR, 0, 90);
+    p.AddLine(x+w - std::max(rBR,0.1f), y+h, x + std::max(rBL,0.1f), y+h);
+    if (rBL>0.01f) p.AddArc(x, y+h-dBL, dBL, dBL, 90, 90);
+    p.AddLine(x, y + h - std::max(rBL,0.1f), x, y + std::max(rTL,0.1f));
+    if (rTL>0.01f) p.AddArc(x, y, dTL, dTL, 180, 90);
+    p.CloseFigure();
+    g.DrawPath(&pen, &p);
+}
+
+static void FillShield(Graphics& g, float cx, float top, float w, float h, const Brush& br)
+{
+    GraphicsPath p;
+    float y = top;
+    float r = w*0.18f;
+    p.StartFigure();
+    p.AddArc(cx - w/2.0f, y, r*2, r*2, 180, 90);
+    p.AddArc(cx + w/2.0f - r*2, y, r*2, r*2, 270, 90);
+    p.AddLine(cx + w/2.0f, y + r, cx + w/2.0f, y + h*0.60f);
+    p.AddBezier(cx + w/2.0f, y + h*0.60f, cx + w*0.28f, y + h*0.82f, cx + w*0.18f, y + h*0.95f, cx, y + h);
+    p.AddBezier(cx, y + h, cx - w*0.18f, y + h*0.95f, cx - w*0.28f, y + h*0.82f, cx - w/2.0f, y + h*0.60f);
+    p.AddLine(cx - w/2.0f, y + h*0.60f, cx - w/2.0f, y + r);
+    p.CloseFigure();
+    g.FillPath(&br, &p);
+}
+
+
+
+static void FillBird(Graphics& g, float cx, float cy, float size, const Brush& br)
+{
+    float s = size;
+    float hw = s/2.0f;
+    float hh = s*0.62f;
+    GraphicsPath p;
+    p.StartFigure();
+    p.AddBezier(cx-hw, cy-hh*0.62f, cx-hw*0.60f, cy-hh*0.10f, cx-hw*0.34f, cy+hh*0.02f, cx, cy+hh*0.24f);
+    p.AddBezier(cx, cy+hh*0.24f, cx+hw*0.34f, cy+hh*0.02f, cx+hw*0.60f, cy-hh*0.10f, cx+hw, cy-hh*0.62f);
+    p.AddBezier(cx+hw, cy-hh*0.62f, cx+hw*0.44f, cy-hh*0.10f, cx+hw*0.18f, cy-hh*0.02f, cx, cy+hh*0.16f);
+    p.AddBezier(cx, cy+hh*0.16f, cx-hw*0.18f, cy-hh*0.02f, cx-hw*0.44f, cy-hh*0.10f, cx-hw, cy-hh*0.62f);
+    p.CloseFigure();
+    g.FillPath(&br, &p);
+}
+
 static void DrawContent(Graphics& g, int w, int h)
 {
     g.SetSmoothingMode(SmoothingModeAntiAlias);
@@ -298,7 +355,7 @@ static void DrawContent(Graphics& g, int w, int h)
     float rTR = (g_mode==Mode::DockRight || g_mode==Mode::DockTop) ? 0 : rr;
     float rBR = (g_mode==Mode::DockRight || g_mode==Mode::DockBottom) ? 0 : rr;
     float rBL = (g_mode==Mode::DockLeft || g_mode==Mode::DockBottom) ? 0 : rr;
-    SolidBrush panelBr(Color(0x73, 0x1E, 0x1E, 0x28));
+    SolidBrush panelBr(Color(0x50, 0x1E, 0x1E, 0x28));
     FillRoundedPanel(g, 0, 0, (float)w, (float)h, rTL, rTR, rBR, rBL, panelBr);
 
     BYTE ar, ag, ab; StateColor(g_memLoad, ar, ag, ab);
@@ -306,11 +363,12 @@ static void DrawContent(Graphics& g, int w, int h)
     Color text(255,0xFD,0xFD,0xFD);
     Color dim(255,0xB4,0xC2,0xCE);
 
-    // 状态点
-    float dotY = Px(6*sc);
-    SolidBrush dotBr(accent);
-    g.FillEllipse(&dotBr, (REAL)(cx - Px(DOT/2*sc)), (REAL)dotY, (REAL)Px(DOT*sc), (REAL)Px(DOT*sc));
-    float y = dotY + Px(DOT*sc) + Px(6*sc);
+    // 顶部状态指示:小盾牌
+    float sw = Px(11.0f*sc), sh = Px(13.0f*sc);
+    float y = Px(6.0f*sc);
+    SolidBrush shBr(accent);
+    FillShield(g, cx, y, sw, sh, shBr);
+    y += sh + Px(10.0f*sc);
 
     if (g_mode == Mode::Float)
     {
@@ -328,11 +386,11 @@ static void DrawContent(Graphics& g, int w, int h)
             g.DrawArc(&mask, ringCx-rs/2.0f, ringCy-rs/2.0f, rs, rs, -90.0f, sweep);
         }
         // 中心百分比
-        Font fp(L"Segoe UI", 9.0f*sc, FontStyleBold, UnitPixel, nullptr);
+        Font fp(L"Segoe UI", 10.0f*sc, FontStyleBold, UnitPixel, nullptr);
         SolidBrush tb(text);
         StringFormat sf; sf.SetAlignment(StringAlignmentCenter); sf.SetLineAlignment(StringAlignmentCenter);
         g.DrawString(FormatPct(g_memLoad).c_str(), -1, &fp, RectF(ringCx-rs/2.0f, ringCy-rs/2.0f, rs, rs), &sf, &tb);
-        y = ringCy + rs/2.0f + Px(4*sc);
+        y = ringCy + rs/2.0f + Px(6*sc);
     }
     else
     {
@@ -348,36 +406,38 @@ static void DrawContent(Graphics& g, int w, int h)
             float fr = std::min(capW/2.0f, fh/2.0f);
             FillRoundedPanel(g, capX, cy+capH-fh, capW, fh, fr, fr, fr, fr, fs);
         }
-        y = cy + capH + Px(4*sc);
+        Pen capStroke(Color(0x90,0xE0,0xE0,0xE0), 1.0f*sc);
+        StrokeRoundedPanel(g, capX+0.5f, cy+0.5f, capW-1.0f, capH-1.0f, capW/2.0f, capW/2.0f, capW/2.0f, capW/2.0f, capStroke);
+        y = cy + capH + Px(6*sc);
     }
 
     float rowW = (g_mode==Mode::Float ? (w - Px(16*sc)) : (w - Px(10*sc)));
     // divider
     SolidBrush sep(Color(0x24,0xFF,0xFF,0xFF));
     g.FillRectangle(&sep, (REAL)Px(8*sc), (REAL)y, (REAL)(w - Px(16*sc)), (REAL)(1.0f*sc));
-    y += Px(6*sc);
+    y += Px(9*sc);
 
-    std::wstring dv, du; FormatSpeed(g_downBps, dv, du);
-    DrawSpeedRow(g, cx, y, rowW, dv, du, CyanR(), CyanG(), CyanB());
-    y += Px(34*sc);
     std::wstring uv, uu; FormatSpeed(g_upBps, uv, uu);
-    DrawSpeedRow(g, cx, y, rowW, uv, uu, ar, ag, ab);
-    y += Px(34*sc);
+    DrawSpeedRow(g, cx, y, rowW, uv, uu, true, CyanR(), CyanG(), CyanB());
+    y += Px(36*sc);
+    std::wstring dv, du; FormatSpeed(g_downBps, dv, du);
+    DrawSpeedRow(g, cx, y, rowW, dv, du, false, ar, ag, ab);
+    y += Px(36*sc);
 
     g.FillRectangle(&sep, (REAL)Px(8*sc), (REAL)y, (REAL)(w - Px(16*sc)), (REAL)(1.0f*sc));
-    y += Px(6*sc);
+    y += Px(9*sc);
 
     // CPU badge
-    Font fBadge(L"Segoe UI", 9.0f*sc, FontStyleBold, UnitPixel, nullptr);
+    Font fBadge(L"Segoe UI", 10.0f*sc, FontStyleBold, UnitPixel, nullptr);
     SolidBrush badgeBg(Color(0x2E, 0x4C, 0xC9, 0xF0));
-    Font fCpu(L"Segoe UI", 13.0f*sc, FontStyleBold, UnitPixel, nullptr);
+    Font fCpu(L"Segoe UI", 10.0f*sc, FontStyleBold, UnitPixel, nullptr);
     StringFormat cf; cf.SetAlignment(StringAlignmentCenter);
-    RectF badge(cx - Px(20*sc), y, Px(40*sc), Px(16*sc));
+    RectF badge(cx - Px(17*sc), y, Px(34*sc), Px(14*sc));
     SolidBrush cpuText(Color(255,CyanR(),CyanG(),CyanB()));
     SolidBrush cpuVal(text);
     g.FillRectangle(&badgeBg, badge);
     g.DrawString(L"CPU", -1, &fBadge, badge, &cf, &cpuText);
-    RectF cpuV(cx - rowW/2.0f, badge.Y + badge.Height + Px(2*sc), rowW, Px(18*sc));
+    RectF cpuV(cx - rowW/2.0f, badge.Y + badge.Height + Px(2*sc), rowW, Px(16*sc));
     g.DrawString(FormatPct((unsigned int)g_cpu).c_str(), -1, &fCpu, cpuV, &cf, &cpuVal);
 }
 
@@ -484,9 +544,11 @@ static void AddTray(HWND hwnd)
     nid.uID = TRAY_UID;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
-    nid.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APPICON));
+    nid.hIcon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR);
+    if (!nid.hIcon) { wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH); nid.hIcon = ExtractIconW(GetModuleHandleW(nullptr), exe, 0); }
     wcscpy_s(nid.szTip, L"Perch");
     Shell_NotifyIconW(NIM_ADD, &nid);
+    if (nid.hIcon) DestroyIcon(nid.hIcon);
 }
 
 static void ToggleVisible()

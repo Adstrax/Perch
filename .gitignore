@@ -1,3 +1,6 @@
 *.o
 Perch.exe
 perch_res.o
+
+# icon design previews (only perch.ico is shipped)
+icons/
