@@ -244,7 +244,6 @@ static void ApplyModeSize()
     int w = Px((g_mode==Mode::Float ? CW_FLOAT : CW_DOCK)*sc);
     int h = Px(CH*sc);
     SetWindowPos(g_hwnd, nullptr, 0,0, w, h, SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
-    ApplyRegion();
 }
 
 // 画一行"值 单位"
@@ -271,13 +270,38 @@ static void DrawSpeedRow(Graphics& g, float colCx, float y, float rowW, const st
     (void)pos;
 }
 
-static void DrawAll(HDC hdc, int w, int h)
+static void FillRoundedPanel(Graphics& g, float x, float y, float w, float h, float rTL, float rTR, float rBR, float rBL, const Brush& br)
 {
-    Graphics g(hdc);
+    GraphicsPath p;
+    float dTL=rTL*2, dTR=rTR*2, dBR=rBR*2, dBL=rBL*2;
+    p.StartFigure();
+    p.AddLine(x + std::max(rTL,0.1f), y, x + w - std::max(rTR,0.1f), y);
+    if (rTR>0.01f) p.AddArc(x+w-dTR, y, dTR, dTR, 270, 90);
+    p.AddLine(x+w, y + std::max(rTR,0.1f), x+w, y + h - std::max(rBR,0.1f));
+    if (rBR>0.01f) p.AddArc(x+w-dBR, y+h-dBR, dBR, dBR, 0, 90);
+    p.AddLine(x+w - std::max(rBR,0.1f), y+h, x + std::max(rBL,0.1f), y+h);
+    if (rBL>0.01f) p.AddArc(x, y+h-dBL, dBL, dBL, 90, 90);
+    p.AddLine(x, y + h - std::max(rBL,0.1f), x, y + std::max(rTL,0.1f));
+    if (rTL>0.01f) p.AddArc(x, y, dTL, dTL, 180, 90);
+    p.CloseFigure();
+    g.FillPath(&br, &p);
+}
+
+static void DrawContent(Graphics& g, int w, int h)
+{
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
     float sc = g_dpi/96.0f;
     float cx = w/2.0f;
+
+    // 亚克力面板:圆角(贴靠边直角),半透明深色,透出背景模糊
+    float rr = 12.0f*sc;
+    float rTL = (g_mode==Mode::DockLeft || g_mode==Mode::DockTop) ? 0 : rr;
+    float rTR = (g_mode==Mode::DockRight || g_mode==Mode::DockTop) ? 0 : rr;
+    float rBR = (g_mode==Mode::DockRight || g_mode==Mode::DockBottom) ? 0 : rr;
+    float rBL = (g_mode==Mode::DockLeft || g_mode==Mode::DockBottom) ? 0 : rr;
+    SolidBrush panelBr(Color(0xB4, 0x1E, 0x1E, 0x28));
+    FillRoundedPanel(g, 0, 0, (float)w, (float)h, rTL, rTR, rBR, rBL, panelBr);
 
     BYTE ar, ag, ab; StateColor(g_memLoad, ar, ag, ab);
     Color accent(255, ar, ag, ab);
@@ -354,6 +378,37 @@ static void DrawAll(HDC hdc, int w, int h)
     RectF cpuV(cx - rowW/2.0f, badge.Y + badge.Height + Px(2*sc), rowW, Px(18*sc));
     g.DrawString(FormatPct((unsigned int)g_cpu).c_str(), -1, &fCpu, cpuV, &cf, &cpuVal);
 }
+
+static void Render()
+{
+    RECT rc{}; GetClientRect(g_hwnd, &rc);
+    int w = rc.right, h = rc.bottom;
+    if (w<=0||h<=0) return;
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    HDC screen = GetDC(nullptr);
+    void* bits = nullptr;
+    HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!dib || !bits) { if(dib) DeleteObject(dib); ReleaseDC(nullptr, screen); return; }
+    HDC mem = CreateCompatibleDC(screen);
+    HBITMAP oldb = (HBITMAP)SelectObject(mem, dib);
+    {
+        Graphics g(mem);
+        g.Clear(Color(0,0,0,0));
+        DrawContent(g, w, h);
+    }
+    BYTE* q = (BYTE*)bits;
+    for (int i=0;i<w*h;i++){ BYTE a=q[3]; if(a<255){ q[0]=(BYTE)(q[0]*a/255); q[1]=(BYTE)(q[1]*a/255); q[2]=(BYTE)(q[2]*a/255); } q+=4; }
+    POINT src{0,0}, dst{0,0}; SIZE sz{w,h};
+    BLENDFUNCTION bf{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
+    UpdateLayeredWindow(g_hwnd, screen, nullptr, &sz, mem, &src, 0, &bf, ULW_ALPHA);
+    SelectObject(mem, oldb); DeleteDC(mem); DeleteObject(dib); ReleaseDC(nullptr, screen);
+}
 // ---------------- 贴靠/菜单/WndProc ----------------
 #define WM_TRAYICON (WM_APP + 1)
 #define TRAY_UID 1
@@ -370,11 +425,8 @@ static void UpdateStats()
 
 static void ApplyAcrylicToWindow()
 {
-    MARGINS mg{-1,-1,-1,-1};
-    DwmExtendFrameIntoClientArea(g_hwnd, &mg);
-    EnableAcrylic(g_hwnd, 0x991E1E28u); // AABBGGRR 深色着色的真亚克力
-    int corner = 2; // DWMWA_WINDOW_CORNER_PREFERENCE = ROUND
-    DwmSetWindowAttribute(g_hwnd, 33, &corner, sizeof(corner));
+    // 分层窗口上启用亚克力背景模糊
+    EnableAcrylic(g_hwnd, 0x991E1E28u); // AABBGGRR
 }
 
 static void DockTo(Mode m)
@@ -397,8 +449,7 @@ static void DockTo(Mode m)
         default:                x=clamp(wr.left,wa.left,wa.right-cw); y=clamp(wr.top,wa.top,wa.bottom-ch); break;
     }
     SetWindowPos(g_hwnd,nullptr,x,y,cw,ch,SWP_NOZORDER|SWP_NOACTIVATE);
-    ApplyRegion();
-    InvalidateRect(g_hwnd,nullptr,FALSE);
+    Render();
 }
 
 static void HandleDragEnd()
@@ -518,14 +569,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SetTimer(hwnd, 1, 1000, nullptr);
             return 0;
         case WM_TIMER:
-            if (wp == 1) { UpdateStats(); InvalidateRect(hwnd, nullptr, FALSE); }
+            if (wp == 1) { UpdateStats(); Render(); }
             return 0;
         case WM_PAINT:
         {
-            PAINTSTRUCT ps; HDC hdc = BeginPaint(hwnd, &ps);
-            RECT rc; GetClientRect(hwnd, &rc);
-            DrawAll(hdc, rc.right, rc.bottom);
-            EndPaint(hwnd, &ps);
+            PAINTSTRUCT ps; BeginPaint(hwnd, &ps); EndPaint(hwnd, &ps);
+            Render();
             return 0;
         }
         case WM_ERASEBKGND:
@@ -546,7 +595,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 SetWindowPos(hwnd, nullptr, r->left, r->top, r->right-r->left, r->bottom-r->top, SWP_NOZORDER|SWP_NOACTIVATE);
             }
             ApplyModeSize();
-            InvalidateRect(hwnd, nullptr, FALSE);
+            Render();
             return 0;
         case WM_TRAYICON:
         {
@@ -587,7 +636,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     wc.lpszClassName = L"PerchWnd";
     RegisterClassW(&wc);
 
-    g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"PerchWnd", L"Perch", WS_POPUP,
+    g_hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW, L"PerchWnd", L"Perch", WS_POPUP,
         CW_USEDEFAULT, CW_USEDEFAULT, CW_FLOAT, CH, nullptr, nullptr, hInst, nullptr);
     if (!g_hwnd) return 1;
 
@@ -603,6 +652,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
 
     AddTray(g_hwnd);
     ShowWindow(g_hwnd, SW_SHOW);
+    Render();
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0))
