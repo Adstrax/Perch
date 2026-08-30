@@ -184,8 +184,8 @@ static float g_dpi = 96.0f;
 static const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const wchar_t* kRunValue = L"Perch";
 
-static const int CW_FLOAT = 104, CW_DOCK = 80, CH = 186;
-static const int RING = 29, RING_TH = 4, DOT = 10;
+static const int CW_FLOAT = 92, CW_DOCK = 72, CH = 152;
+static const int RING = 26, RING_TH = 4, DOT = 8;
 static const int CAP_W = 11, CAP_H = 34;
 
 static int Px(float v){ return (int)std::lround(v); }
@@ -246,28 +246,31 @@ static void ApplyModeSize()
     SetWindowPos(g_hwnd, nullptr, 0,0, w, h, SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
 }
 
-// 画一行"值 单位"
-static void DrawSpeedRow(Graphics& g, float colCx, float y, float rowW, const std::wstring& value, BYTE arrR, BYTE arrG, BYTE arrB)
+// 画一行 "↑ 值 单位"(单行,紧凑)
+static void DrawSpeedRow(Graphics& g, float cx, float y, float rowW, const std::wstring& value, BYTE arrR, BYTE arrG, BYTE arrB)
 {
-    Font fValue(L"Segoe UI", 14.0f*(g_dpi/96.0f), FontStyleBold, UnitPixel, nullptr);
-    Font fUnit(L"Segoe UI", 11.0f*(g_dpi/96.0f), FontStyleRegular, UnitPixel, nullptr);
+    float sc = g_dpi/96.0f;
+    Font fArrow(L"Segoe UI Symbol", 10.0f*sc, FontStyleRegular, UnitPixel, nullptr);
+    Font fValue(L"Segoe UI", 13.5f*sc, FontStyleBold, UnitPixel, nullptr);
+    Font fUnit(L"Segoe UI", 10.5f*sc, FontStyleRegular, UnitPixel, nullptr);
+    SolidBrush aBrush(Color(255,arrR,arrG,arrB));
     SolidBrush vBrush(Color(255,0xFD,0xFD,0xFD));
     SolidBrush uBrush(Color(255,0xB4,0xC2,0xCE));
-
-    // 第一行: 箭头 + 数值
-    Font fArrow(L"Segoe UI Symbol", 11.0f*(g_dpi/96.0f), FontStyleRegular, UnitPixel, nullptr);
-    SolidBrush aBrush(Color(255,arrR,arrG,arrB));
-    wchar_t arrow[] = { L'\u2191', L' ', L'\0' };
-    PointF pos(colCx - rowW/2.0f, y);
-    g.DrawString(arrow, -1, &fArrow, pos, &aBrush);
-    // value
-    StringFormat sf; sf.SetAlignment(StringAlignmentCenter);
-    RectF vr(colCx - rowW/2.0f, y + Px(13*(g_dpi/96.0f)), rowW, Px(18*(g_dpi/96.0f)));
-    g.DrawString(value.c_str(), -1, &fValue, vr, &sf, &vBrush);
-    // unit (下方, 居中)
-    RectF ur(colCx - rowW/2.0f, y + Px(30*(g_dpi/96.0f)), rowW, Px(16*(g_dpi/96.0f)));
-    g.DrawString(L"K/s", -1, &fUnit, ur, &sf, &uBrush);
-    (void)pos;
+    wchar_t arrow[3] = { L'\u2191', L' ', L'\0' };
+    float lineH = Px(17.0f*sc);
+    float gap = Px(3.0f*sc);
+    RectF boxA, boxV, boxU;
+    g.MeasureString(arrow, -1, &fArrow, PointF(0,0), &boxA);
+    g.MeasureString(value.c_str(), -1, &fValue, PointF(0,0), &boxV);
+    g.MeasureString(L"K/s", -1, &fUnit, PointF(0,0), &boxU);
+    float aw = boxA.Width, vw = boxV.Width, uw = boxU.Width;
+    float total = aw + gap + vw + gap + uw;
+    float x = cx - total/2.0f;
+    StringFormat left; left.SetAlignment(StringAlignmentNear); left.SetLineAlignment(StringAlignmentCenter);
+    g.DrawString(arrow, -1, &fArrow, RectF(x, y, aw, lineH), &left, &aBrush); x += aw + gap;
+    g.DrawString(value.c_str(), -1, &fValue, RectF(x, y, vw, lineH), &left, &vBrush); x += vw + gap;
+    g.DrawString(L"K/s", -1, &fUnit, RectF(x, y, uw, lineH), &left, &uBrush);
+    (void)rowW;
 }
 
 static void FillRoundedPanel(Graphics& g, float x, float y, float w, float h, float rTL, float rTR, float rBR, float rBL, const Brush& br)
@@ -290,7 +293,7 @@ static void FillRoundedPanel(Graphics& g, float x, float y, float w, float h, fl
 static void DrawContent(Graphics& g, int w, int h)
 {
     g.SetSmoothingMode(SmoothingModeAntiAlias);
-    g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+    g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
     float sc = g_dpi/96.0f;
     float cx = w/2.0f;
 
@@ -300,7 +303,7 @@ static void DrawContent(Graphics& g, int w, int h)
     float rTR = (g_mode==Mode::DockRight || g_mode==Mode::DockTop) ? 0 : rr;
     float rBR = (g_mode==Mode::DockRight || g_mode==Mode::DockBottom) ? 0 : rr;
     float rBL = (g_mode==Mode::DockLeft || g_mode==Mode::DockBottom) ? 0 : rr;
-    SolidBrush panelBr(Color(0xB4, 0x1E, 0x1E, 0x28));
+    SolidBrush panelBr(Color(0x73, 0x1E, 0x1E, 0x28));
     FillRoundedPanel(g, 0, 0, (float)w, (float)h, rTL, rTR, rBR, rBL, panelBr);
 
     BYTE ar, ag, ab; StateColor(g_memLoad, ar, ag, ab);
@@ -309,10 +312,10 @@ static void DrawContent(Graphics& g, int w, int h)
     Color dim(255,0xB4,0xC2,0xCE);
 
     // 状态点
-    float dotY = Px(8*sc);
+    float dotY = Px(6*sc);
     SolidBrush dotBr(accent);
     g.FillEllipse(&dotBr, (REAL)(cx - Px(DOT/2*sc)), (REAL)dotY, (REAL)Px(DOT*sc), (REAL)Px(DOT*sc));
-    float y = dotY + Px(DOT*sc) + Px(8*sc);
+    float y = dotY + Px(DOT*sc) + Px(6*sc);
 
     if (g_mode == Mode::Float)
     {
@@ -334,7 +337,7 @@ static void DrawContent(Graphics& g, int w, int h)
         SolidBrush tb(text);
         StringFormat sf; sf.SetAlignment(StringAlignmentCenter); sf.SetLineAlignment(StringAlignmentCenter);
         g.DrawString(FormatPct(g_memLoad).c_str(), -1, &fp, RectF(ringCx-rs/2.0f, ringCy-rs/2.0f, rs, rs), &sf, &tb);
-        y = ringCy + rs/2.0f + Px(6*sc);
+        y = ringCy + rs/2.0f + Px(4*sc);
     }
     else
     {
@@ -348,22 +351,22 @@ static void DrawContent(Graphics& g, int w, int h)
             SolidBrush fs(accent);
             g.FillRectangle(&fs, cx-capW/2.0f, cy+capH-fh, capW, fh);
         }
-        y = cy + capH + Px(6*sc);
+        y = cy + capH + Px(4*sc);
     }
 
     float rowW = (g_mode==Mode::Float ? (w - Px(16*sc)) : (w - Px(10*sc)));
     // divider
     SolidBrush sep(Color(0x24,0xFF,0xFF,0xFF));
     g.FillRectangle(&sep, (REAL)Px(8*sc), (REAL)y, (REAL)(w - Px(16*sc)), (REAL)(1.0f*sc));
-    y += Px(8*sc);
+    y += Px(6*sc);
 
     DrawSpeedRow(g, cx, y, rowW, ::FormatSpeed(g_downBps), CyanR(), CyanG(), CyanB());
-    y += Px(46*sc);
+    y += Px(24*sc);
     DrawSpeedRow(g, cx, y, rowW, ::FormatSpeed(g_upBps), ar, ag, ab);
-    y += Px(46*sc);
+    y += Px(24*sc);
 
     g.FillRectangle(&sep, (REAL)Px(8*sc), (REAL)y, (REAL)(w - Px(16*sc)), (REAL)(1.0f*sc));
-    y += Px(8*sc);
+    y += Px(6*sc);
 
     // CPU badge
     Font fBadge(L"Segoe UI", 9.0f*sc, FontStyleBold, UnitPixel, nullptr);
@@ -426,6 +429,8 @@ static void UpdateStats()
 static void ApplyAcrylicToWindow()
 {
     // 分层窗口上启用亚克力背景模糊
+    MARGINS mg{-1,-1,-1,-1};
+    DwmExtendFrameIntoClientArea(g_hwnd, &mg);
     EnableAcrylic(g_hwnd, 0x991E1E28u); // AABBGGRR
 }
 
@@ -621,6 +626,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
 {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     GdiplusStartupInput gsi; GdiplusStartup(&g_gdiplusToken, &gsi, nullptr);
     HDC sdc = GetDC(nullptr);
     g_dpi = (float)GetDeviceCaps(sdc, LOGPIXELSX);
