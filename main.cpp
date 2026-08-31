@@ -69,6 +69,17 @@ static unsigned long long ftToU64(FILETIME f){ return ((unsigned long long)f.dwH
 
 struct NetCounters { unsigned long long rx=0, tx=0; };
 
+static bool IsVirtualNic(const char* d)
+{
+    static const char* keys[] = {
+        "virtual","hyper-v","vpn","tap","wan miniport","bluetooth","vmware",
+        "virtualbox","vethernet","wsl","tunnel","wwan","hyperv"
+    };
+    if (!d) return false;
+    for (const char* k : keys) if (strstr(d, k)) return true;
+    return false;
+}
+
 static NetCounters SumNet()
 {
     NetCounters c{};
@@ -83,6 +94,11 @@ static NetCounters SumNet()
             MIB_IFROW& row = tbl->table[i];
             if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
             if (row.dwOperStatus != IF_OPER_STATUS_OPERATIONAL) continue;
+            char desc[256] = {0};
+            DWORD dl = row.dwDescrLen > 255 ? 255 : row.dwDescrLen;
+            for (DWORD dd = 0; dd < dl; ++dd) desc[dd] = (char)row.bDescr[dd];
+            desc[dl] = 0;
+            if (IsVirtualNic(desc)) continue;
             c.rx += row.dwInOctets;
             c.tx += row.dwOutOctets;
         }
@@ -113,8 +129,9 @@ public:
         double dt = (nowTick - _lastTick) / 1000000000.0;
         if (dt <= 0) dt = 1.0;
 
-        long long drx = (now.rx >= _last.rx) ? (long long)(now.rx - _last.rx) : 0;
-        long long dtx = (now.tx >= _last.tx) ? (long long)(now.tx - _last.tx) : 0;
+        const unsigned long long TWO32 = 0x100000000ULL;
+        long long drx = (now.rx >= _last.rx) ? (long long)(now.rx - _last.rx) : (long long)(now.rx + TWO32 - _last.rx);
+        long long dtx = (now.tx >= _last.tx) ? (long long)(now.tx - _last.tx) : (long long)(now.tx + TWO32 - _last.tx);
         downBps = std::max(0.0, (double)drx / dt);
         upBps   = std::max(0.0, (double)dtx / dt);
 
