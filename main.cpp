@@ -14,6 +14,8 @@
 #include <iphlpapi.h>
 #include <netioapi.h>
 #include <shellapi.h>
+#include <shlobj.h>
+#include <objbase.h>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -180,6 +182,10 @@ static float g_dpi = 96.0f;
 
 static const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const wchar_t* kRunValue = L"Perch";
+static const wchar_t* kStateKey = L"Software\\Perch";
+static const wchar_t* kStateEdge = L"DockEdge";
+static const wchar_t* kStateX = L"DockX";
+static const wchar_t* kStateY = L"DockY";
 
 static const int CW_FLOAT = 40, CW_DOCK = 36, CH = 192;
 static const int RING = 26, RING_TH = 5, DOT = 9;
@@ -494,6 +500,70 @@ static void ApplyAcrylicToWindow()
     EnableAcrylic(g_hwnd, 0x991E1E28u); // AABBGGRR
 }
 
+static int ReadDockEdge()
+{
+    DWORD v = 2; HKEY k; DWORD sz = sizeof(v); DWORD type = 0;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kStateKey, 0, KEY_READ, &k) == ERROR_SUCCESS)
+    {
+        if (RegQueryValueExW(k, kStateEdge, nullptr, &type, (BYTE*)&v, &sz) != ERROR_SUCCESS) v = 2;
+        RegCloseKey(k);
+    }
+    if (v < 1 || v > 4) v = 2;
+    return (int)v;
+}
+
+static void SaveDockEdge(int edge)
+{
+    HKEY k; DWORD disp;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kStateKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, &disp) == ERROR_SUCCESS)
+    {
+        DWORD v = (DWORD)edge;
+        RegSetValueExW(k, kStateEdge, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
+        RegCloseKey(k);
+    }
+}
+static bool ReadDockPos(bool& ok, int& x, int& y)
+{
+    ok = false; HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kStateKey, 0, KEY_READ, &k) == ERROR_SUCCESS)
+    {
+        DWORD type = 0, sx = sizeof(x), sy = sizeof(y);
+        if (RegQueryValueExW(k, kStateX, nullptr, &type, (BYTE*)&x, &sx) == ERROR_SUCCESS &&
+            RegQueryValueExW(k, kStateY, nullptr, &type, (BYTE*)&y, &sy) == ERROR_SUCCESS) ok = true;
+        RegCloseKey(k);
+    }
+    return ok;
+}
+
+static void SaveDockPos(int x, int y)
+{
+    HKEY k; DWORD disp;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kStateKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, &disp) == ERROR_SUCCESS)
+    {
+        DWORD vx = (DWORD)x, vy = (DWORD)y;
+        RegSetValueExW(k, kStateX, 0, REG_DWORD, (const BYTE*)&vx, sizeof(vx));
+        RegSetValueExW(k, kStateY, 0, REG_DWORD, (const BYTE*)&vy, sizeof(vy));
+        RegCloseKey(k);
+    }
+}
+
+static void RestoreDockState()
+{
+    int edge = ReadDockEdge();
+    g_mode = (Mode)edge;
+    ApplyModeSize();
+    RECT cr{}; GetClientRect(g_hwnd, &cr); int cw = cr.right, ch = cr.bottom;
+    HMONITOR mon = MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{}; mi.cbSize = sizeof(mi); GetMonitorInfo(mon, &mi);
+    RECT wa = mi.rcWork;
+    int x, y; bool have;
+    if (ReadDockPos(have, x, y) && have) { }
+    else { x = wa.right - cw; y = wa.top + (wa.bottom - wa.top - ch) / 2; }
+    SetWindowPos(g_hwnd, nullptr, x, y, cw, ch, SWP_NOZORDER|SWP_NOACTIVATE);
+    SaveDockEdge((int)g_mode);
+    SaveDockPos(x, y);
+    Render();
+}
 static void DockTo(Mode m)
 {
     // 记住当前窗口位置用于夹取
@@ -513,7 +583,9 @@ static void DockTo(Mode m)
         case Mode::DockBottom:  y=wa.bottom-ch; x=clamp(wr.left,wa.left,wa.right-cw); break;
         default:                x=clamp(wr.left,wa.left,wa.right-cw); y=clamp(wr.top,wa.top,wa.bottom-ch); break;
     }
+
     SetWindowPos(g_hwnd,nullptr,x,y,cw,ch,SWP_NOZORDER|SWP_NOACTIVATE);
+    if (m != Mode::Float) { SaveDockEdge((int)m); SaveDockPos(x, y); }
     Render();
 }
 
@@ -558,6 +630,28 @@ static void ToggleVisible()
     else { ShowWindow(g_hwnd, SW_SHOW); SetForegroundWindow(g_hwnd); }
 }
 
+static void EnsureStartupShortcut(bool create)
+{
+    wchar_t startDir[MAX_PATH];
+    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_STARTUP, nullptr, SHGFP_TYPE_CURRENT, startDir);
+    if (FAILED(hr)) return;
+    wchar_t lnk[MAX_PATH + 16];
+    int l = (int)wcslen(startDir);
+    for (int i = 0; i < l; ++i) lnk[i] = startDir[i];
+    lnk[l] = L'\\';
+    wcscpy(lnk + l + 1, L"Perch.lnk");
+
+    if (!create) { DeleteFileW(lnk); return; }
+
+    wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    IShellLinkW* psl = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW, (void**)&psl))) return;
+    psl->SetPath(exe);
+    psl->SetDescription(L"Perch");
+    IPersistFile* pf = nullptr;
+    if (SUCCEEDED(psl->QueryInterface(IID_IPersistFile, (void**)&pf))) { pf->Save(lnk, TRUE); pf->Release(); }
+    psl->Release();
+}
 static bool IsAutoStart()
 {
     wchar_t buf[MAX_PATH]; DWORD sz = sizeof(buf);
@@ -567,13 +661,20 @@ static bool IsAutoStart()
 
 static void SetAutoStart(bool on)
 {
+    EnsureStartupShortcut(on);
     HKEY k; DWORD disp;
     if (on)
     {
         if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, &disp) == ERROR_SUCCESS)
         {
-            wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
-            wchar_t val[MAX_PATH+8]; swprintf(val, MAX_PATH+8, L"\"%s\"", exe);
+            const int kPathMax = 2048;
+            wchar_t exe[kPathMax]; GetModuleFileNameW(nullptr, exe, kPathMax);
+            wchar_t val[kPathMax+4];
+            int exl = (int)wcslen(exe);
+            val[0] = L'"';
+            for (int i = 0; i < exl; ++i) val[i+1] = exe[i];
+            val[exl+1] = L'"';
+            val[exl+2] = 0;
             RegSetValueExW(k, kRunValue, 0, REG_SZ, (const BYTE*)val, (DWORD)((wcslen(val)+1)*sizeof(wchar_t)));
             RegCloseKey(k);
         }
@@ -689,6 +790,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
 {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     GdiplusStartupInput gsi; GdiplusStartup(&g_gdiplusToken, &gsi, nullptr);
     HDC sdc = GetDC(nullptr);
     g_dpi = (float)GetDeviceCaps(sdc, LOGPIXELSX);
@@ -711,16 +813,11 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     ApplyAcrylicToWindow();
     ApplyModeSize();
 
-    // 初始位置:屏幕工作区右侧居中
-    HMONITOR mon = MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi{}; mi.cbSize=sizeof(mi); GetMonitorInfo(mon,&mi);
-    RECT wa = mi.rcWork; RECT cr{}; GetClientRect(g_hwnd,&cr);
-    int cw=cr.right, ch=cr.bottom;
-    SetWindowPos(g_hwnd, nullptr, wa.right-cw-Px(40*(g_dpi/96.0f)), wa.top+(wa.bottom-wa.top-ch)/2, cw, ch, SWP_NOZORDER|SWP_NOACTIVATE);
-
     AddTray(g_hwnd);
     ShowWindow(g_hwnd, SW_SHOW);
-    Render();
+    if (IsAutoStart()) EnsureStartupShortcut(true);
+    // 开机默认贴靠到上次用的边(默认右侧)
+    RestoreDockState();
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0))
@@ -729,5 +826,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
         DispatchMessageW(&m);
     }
     GdiplusShutdown(g_gdiplusToken);
+    CoUninitialize();
     return 0;
 }

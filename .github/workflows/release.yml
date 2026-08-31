@@ -21,7 +21,7 @@ jobs:
         shell: msys2 {0}
         run: |
           windres perch.rc -O coff -o perch_res.o
-          g++ -std=c++17 -O2 -mwindows -municode -DUNICODE -D_UNICODE -static -static-libgcc -static-libstdc++ main.cpp perch_res.o -o Perch.exe -lgdiplus -ldwmapi -liphlpapi -lshell32 -luser32 -lgdi32 -lole32 -ladvapi32
+          g++ -std=c++17 -O2 -mwindows -municode -DUNICODE -D_UNICODE -static -static-libgcc -static-libstdc++ main.cpp perch_res.o -o Perch.exe -lgdiplus -ldwmapi -liphlpapi -lshell32 -luser32 -lgdi32 -lole32 -ladvapi32 -luuid
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
