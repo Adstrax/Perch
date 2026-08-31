@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <gdiplus.h>
 #include <mmsystem.h>
 #include "res.h"
