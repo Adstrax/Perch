@@ -707,6 +707,21 @@ static void SetAutoStart(bool on)
     }
 }
 
+static const wchar_t* kAppVersion = L"2.0.0";
+
+static void ShowAbout()
+{
+    std::wstring text;
+    text += L"Perch  v";
+    text += kAppVersion;
+    text += L"\n\n";
+    text += L"Tiny native Windows network-speed monitor widget.\n";
+    text += L"Translucent Acrylic UI, Win11 rounded corners, floating & docking.\n";
+    text += L"C++17 / Win32 (GDI+, Acrylic), no .NET, no runtime dependency.\n\n";
+    text += L"(c) 2026 Adstrax";
+    MessageBoxW(g_hwnd, text.c_str(), L"About Perch", MB_OK | MB_ICONINFORMATION);
+}
+
 static void HandleMenuCommand(int cmd)
 {
     switch (cmd)
@@ -722,6 +737,7 @@ static void HandleMenuCommand(int cmd)
         case 21: SetAutoStart(!IsAutoStart()); break;
         case 22: ShowWindow(g_hwnd, SW_HIDE); break;
         case 23: PostMessageW(g_hwnd, WM_CLOSE, 0, 0); break;
+        case 24: ShowAbout(); break;
     }
 }
 
@@ -738,6 +754,8 @@ static void ShowMenu()
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 22, L"Hide to tray");
     AppendMenuW(menu, MF_STRING, 23, L"Exit");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 24, L"About Perch");
     POINT pt; GetCursorPos(&pt);
     SetForegroundWindow(g_hwnd);
     int cmd = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, nullptr);
