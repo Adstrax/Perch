@@ -3,8 +3,8 @@
 
 IDI_APPICON ICON "perch.ico"
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,0,0,0
- PRODUCTVERSION 2,0,0,0
+ FILEVERSION 2,0,1,0
+ PRODUCTVERSION 2,0,1,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -16,11 +16,11 @@ BEGIN
         BLOCK "080404b0"
         BEGIN
             VALUE "FileDescription", "Perch - network speed monitor"
-            VALUE "FileVersion", "2.0.0"
+            VALUE "FileVersion", "2.0.1"
             VALUE "InternalName", "Perch.exe"
             VALUE "OriginalFilename", "Perch.exe"
             VALUE "ProductName", "Perch"
-            VALUE "ProductVersion", "2.0.0"
+            VALUE "ProductVersion", "2.0.1"
         END
     END
     BLOCK "VarFileInfo"

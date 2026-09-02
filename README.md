@@ -1,6 +1,6 @@
 # Perch
 
-> **v2.0.0** &mdash; adds an in-app **About** dialog (tray menu &rarr; "About Perch") that shows the version. Run `build.bat` to rebuild.
+> **v2.0.1** &mdash; adds an in-app **About** dialog (tray menu &rarr; "About Perch"), and removes the CPU label background chip for a consistent look. Run `build.bat` to rebuild.
 
 A tiny, native Windows network-speed monitor widget (C++ / Win32, no .NET).
 

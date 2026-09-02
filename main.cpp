@@ -705,7 +705,7 @@ static void SetAutoStart(bool on)
     }
 }
 
-static const wchar_t* kAppVersion = L"2.0.0";
+static const wchar_t* kAppVersion = L"2.0.1";
 
 static void ShowAbout()
 {
