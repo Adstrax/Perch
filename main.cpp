@@ -454,13 +454,11 @@ static void DrawContent(Graphics& g, int w, int h)
 
     // CPU badge
     Font fBadge(L"Segoe UI", 11.0f*sc, FontStyleBold, UnitPixel, nullptr);
-    SolidBrush badgeBg(Color(0x2E, 0x4C, 0xC9, 0xF0));
     Font fCpu(L"Segoe UI", 11.0f*sc, FontStyleBold, UnitPixel, nullptr);
     StringFormat cf; cf.SetAlignment(StringAlignmentCenter);
     RectF badge(cx - Px(17*sc), y, Px(34*sc), Px(14*sc));
     SolidBrush cpuText(Color(255,CyanR(),CyanG(),CyanB()));
     SolidBrush cpuVal(text);
-    g.FillRectangle(&badgeBg, badge);
     g.DrawString(L"CPU", -1, &fBadge, badge, &cf, &cpuText);
     RectF cpuV(cx - rowW/2.0f, badge.Y + badge.Height + Px(2*sc), rowW, Px(16*sc));
     g.DrawString(FormatPct((unsigned int)g_cpu).c_str(), -1, &fCpu, cpuV, &cf, &cpuVal);
