@@ -1,6 +1,6 @@
 # Perch
 
-> **v2.0.1** &mdash; adds an in-app **About** dialog (tray menu &rarr; "About Perch"), and removes the CPU label background chip for a consistent look. Run `build.bat` to rebuild.
+> **v2.0.2** &mdash; fixes the speed readout so the decimal digit is never clipped (the number now shrinks to fit instead of being cut short, e.g. "50."), and makes the readings accurate: per-adapter filter-driver interfaces are no longer counted several times over, and sampling now uses 64-bit interface counters. Run `build.bat` to rebuild.
 
 A tiny, native Windows network-speed monitor widget (C++ / Win32, no .NET).
 
@@ -20,4 +20,4 @@ build.bat
 
 ## Stack
 
-C++17, Win32 / GDI+ (`SetWindowCompositionAttribute` Acrylic), `GetIfTable`, `GlobalMemoryStatusEx`, `GetSystemTimes`.
+C++17, Win32 / GDI+ (`SetWindowCompositionAttribute` Acrylic), `GetIfTable2`, `GlobalMemoryStatusEx`, `GetSystemTimes`.

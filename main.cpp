@@ -11,6 +11,8 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <dwmapi.h>
+#include <winsock2.h>
+#include <ws2ipdef.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
 #include <shellapi.h>
@@ -23,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwctype>
 #include <gdiplus.h>
 #include <mmsystem.h>
 #include "res.h"
@@ -69,40 +72,38 @@ static unsigned long long ftToU64(FILETIME f){ return ((unsigned long long)f.dwH
 
 struct NetCounters { unsigned long long rx=0, tx=0; };
 
-static bool IsVirtualNic(const char* d)
+static bool IsVirtualNic(const wchar_t* d)
 {
-    static const char* keys[] = {
-        "virtual","hyper-v","vpn","tap","wan miniport","bluetooth","vmware",
-        "virtualbox","vethernet","wsl","tunnel","wwan","hyperv"
+    static const wchar_t* keys[] = {
+        L"virtual", L"hyper-v", L"vpn", L"tap", L"wan miniport", L"bluetooth", L"vmware",
+        L"virtualbox", L"vethernet", L"wsl", L"tunnel", L"wwan", L"hyperv", L"loopback",
+        L"teredo", L"isatap", L"pseudo", L"docker", L"ras ", L"npcap", L"wintun",
+        L"虚拟", L"隧道", L"回环"
     };
     if (!d) return false;
-    for (const char* k : keys) if (strstr(d, k)) return true;
+    std::wstring s(d);
+    for (wchar_t& c : s) c = (wchar_t)towlower(c);
+    for (const wchar_t* k : keys) if (s.find(k) != std::wstring::npos) return true;
     return false;
 }
 
 static NetCounters SumNet()
 {
     NetCounters c{};
-    ULONG size = 0;
-    if (GetIfTable(nullptr, &size, FALSE) != ERROR_INSUFFICIENT_BUFFER) return c;
-    std::vector<BYTE> buf(size);
-    PMIB_IFTABLE tbl = (PMIB_IFTABLE)buf.data();
-    if (GetIfTable(tbl, &size, FALSE) == NO_ERROR && tbl)
+    PMIB_IF_TABLE2 tbl = nullptr;
+    if (GetIfTable2(&tbl) != NO_ERROR || !tbl) return c;
+    for (ULONG i = 0; i < tbl->NumEntries; ++i)
     {
-        for (DWORD i = 0; i < tbl->dwNumEntries; ++i)
-        {
-            MIB_IFROW& row = tbl->table[i];
-            if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
-            if (row.dwOperStatus != IF_OPER_STATUS_OPERATIONAL) continue;
-            char desc[256] = {0};
-            DWORD dl = row.dwDescrLen > 255 ? 255 : row.dwDescrLen;
-            for (DWORD dd = 0; dd < dl; ++dd) desc[dd] = (char)row.bDescr[dd];
-            desc[dl] = 0;
-            if (IsVirtualNic(desc)) continue;
-            c.rx += row.dwInOctets;
-            c.tx += row.dwOutOctets;
-        }
+        MIB_IF_ROW2& row = tbl->Table[i];
+        if (row.InterfaceAndOperStatusFlags.FilterInterface) continue; // 过滤驱动接口与真实网卡重复计数
+        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK) continue;   // 回环不计入真实网速
+        if (row.Type == IF_TYPE_TUNNEL) continue;              // 隧道类虚拟接口
+        if (row.OperStatus != IfOperStatusUp) continue;        // 只统计已连接网卡
+        if (IsVirtualNic(row.Description)) continue;           // 虚拟网卡
+        c.rx += row.InOctets;                                  // 64 位计数器,无回绕问题
+        c.tx += row.OutOctets;
     }
+    FreeMibTable(tbl);
     return c;
 }
 
@@ -129,11 +130,11 @@ public:
         double dt = (nowTick - _lastTick) / 1000000000.0;
         if (dt <= 0) dt = 1.0;
 
-        const unsigned long long TWO32 = 0x100000000ULL;
-        long long drx = (now.rx >= _last.rx) ? (long long)(now.rx - _last.rx) : (long long)(now.rx + TWO32 - _last.rx);
-        long long dtx = (now.tx >= _last.tx) ? (long long)(now.tx - _last.tx) : (long long)(now.tx + TWO32 - _last.tx);
-        downBps = std::max(0.0, (double)drx / dt);
-        upBps   = std::max(0.0, (double)dtx / dt);
+        // 64 位计数器不会回绕;网卡增删导致累计值变小时忽略本次,避免出现虚假峰值
+        double drx = (now.rx >= _last.rx) ? (double)(now.rx - _last.rx) : 0.0;
+        double dtx = (now.tx >= _last.tx) ? (double)(now.tx - _last.tx) : 0.0;
+        downBps = drx / dt;
+        upBps   = dtx / dt;
 
         _last.rx = now.rx; _last.tx = now.tx; _lastTick = nowTick;
 
@@ -267,11 +268,25 @@ static void ApplyModeSize()
     SetWindowPos(g_hwnd, nullptr, 0,0, w, h, SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
 }
 
+// 数值串在给定宽度内必须完整显示(否则小数位会被裁掉):按需自动缩小字号
+static float FitValueFont(Graphics& g, const wchar_t* a, const wchar_t* b, float availW, float basePx)
+{
+    Font probe(L"Segoe UI", basePx, FontStyleBold, UnitPixel, nullptr);
+    RectF box;
+    float wMax = 0.0f;
+    g.MeasureString(a, -1, &probe, PointF(0,0), &box); wMax = std::max(wMax, box.Width);
+    g.MeasureString(b, -1, &probe, PointF(0,0), &box); wMax = std::max(wMax, box.Width);
+    if (wMax <= availW || wMax <= 0.0f) return basePx;
+    float px = basePx * (availW / wMax) * 0.98f;   // 0.98 留出安全余量
+    if (px < 6.0f) px = 6.0f;
+    return px;
+}
+
 // 画一行 "↑ 值 单位"(单行,紧凑)
-static void DrawSpeedRow(Graphics& g, float cx, float y, float rowW, const std::wstring& value, const std::wstring& unit, bool up, BYTE arrR, BYTE arrG, BYTE arrB)
+static void DrawSpeedRow(Graphics& g, float cx, float y, float rowW, const std::wstring& value, const std::wstring& unit, bool up, BYTE arrR, BYTE arrG, BYTE arrB, float valuePx)
 {
     float sc = g_dpi/96.0f;
-    Font fValue(L"Segoe UI", 11.0f*sc, FontStyleBold, UnitPixel, nullptr);
+    Font fValue(L"Segoe UI", valuePx, FontStyleBold, UnitPixel, nullptr);
     Font fUnit(L"Segoe UI", 11.0f*sc, FontStyleBold, UnitPixel, nullptr);
     SolidBrush aBrush(Color(255,arrR,arrG,arrB));
     SolidBrush vBrush(Color(255,0xFD,0xFD,0xFD));
@@ -436,17 +451,18 @@ static void DrawContent(Graphics& g, int w, int h)
         y = cy + capH + Px(6*sc);
     }
 
-    float rowW = (g_mode==Mode::Float ? (w - Px(16*sc)) : (w - Px(10*sc)));
+    float rowW = (g_mode==Mode::Float ? (w - Px(8*sc)) : (w - Px(6*sc)));
     // divider
     SolidBrush sep(Color(0x24,0xFF,0xFF,0xFF));
     g.FillRectangle(&sep, (REAL)Px(8*sc), (REAL)y, (REAL)(w - Px(16*sc)), (REAL)(1.0f*sc));
     y += Px(9*sc);
 
     std::wstring uv, uu; FormatSpeed(g_upBps, uv, uu);
-    DrawSpeedRow(g, cx, y, rowW, uv, uu, true, CyanR(), CyanG(), CyanB());
-    y += Px(36*sc);
     std::wstring dv, du; FormatSpeed(g_downBps, dv, du);
-    DrawSpeedRow(g, cx, y, rowW, dv, du, false, ar, ag, ab);
+    float vPx = FitValueFont(g, uv.c_str(), dv.c_str(), rowW, 11.0f*sc);
+    DrawSpeedRow(g, cx, y, rowW, uv, uu, true, CyanR(), CyanG(), CyanB(), vPx);
+    y += Px(36*sc);
+    DrawSpeedRow(g, cx, y, rowW, dv, du, false, ar, ag, ab, vPx);
     y += Px(36*sc);
 
     g.FillRectangle(&sep, (REAL)Px(8*sc), (REAL)y, (REAL)(w - Px(16*sc)), (REAL)(1.0f*sc));
@@ -705,7 +721,7 @@ static void SetAutoStart(bool on)
     }
 }
 
-static const wchar_t* kAppVersion = L"2.0.1";
+static const wchar_t* kAppVersion = L"2.0.2";
 
 static void ShowAbout()
 {
