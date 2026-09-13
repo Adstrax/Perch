@@ -67,6 +67,37 @@ static void EnableAcrylic(HWND hwnd, unsigned int color)
     pSetWindowCompositionAttribute(hwnd, &wc);
 }
 
+// ---------------- 深色菜单(uxtheme 未公开接口) ----------------
+// 菜单跟随系统深浅色:AllowDark 模式 —— 系统深色就画深色菜单,系统浅色就画浅色菜单
+typedef int  (WINAPI* PFN_SetPreferredAppMode)(int);
+typedef BOOL (WINAPI* PFN_AllowDarkModeForWindow)(HWND, BOOL);
+typedef void (WINAPI* PFN_FlushMenuThemes)();
+
+static PFN_SetPreferredAppMode    pSetPreferredAppMode    = nullptr;
+static PFN_AllowDarkModeForWindow pAllowDarkModeForWindow = nullptr;
+static PFN_FlushMenuThemes        pFlushMenuThemes        = nullptr;
+static bool g_darkApiTried = false;
+
+// 这三个接口在 uxtheme 里只按序号导出,只能按序号取;取不到就静默跳过(菜单保持系统默认)
+static void LoadDarkMenuApi()
+{
+    if (g_darkApiTried) return;
+    g_darkApiTried = true;
+    HMODULE h = LoadLibraryW(L"uxtheme.dll");
+    if (!h) return;
+    pSetPreferredAppMode    = (PFN_SetPreferredAppMode)   GetProcAddress(h, MAKEINTRESOURCEA(135));
+    pAllowDarkModeForWindow = (PFN_AllowDarkModeForWindow)GetProcAddress(h, MAKEINTRESOURCEA(133));
+    pFlushMenuThemes        = (PFN_FlushMenuThemes)       GetProcAddress(h, MAKEINTRESOURCEA(136));
+}
+
+static void ApplyMenuTheme(HWND hwnd)
+{
+    LoadDarkMenuApi();
+    if (pSetPreferredAppMode) pSetPreferredAppMode(1);            // 1 = AllowDark(跟随系统)
+    if (hwnd && pAllowDarkModeForWindow) pAllowDarkModeForWindow(hwnd, TRUE);
+    if (pFlushMenuThemes) pFlushMenuThemes();                     // 主题切换后立即生效,不用重启
+}
+
 // ---------------- 统计 ----------------
 static unsigned long long ftToU64(FILETIME f){ return ((unsigned long long)f.dwHighDateTime << 32) | (unsigned long long)f.dwLowDateTime; }
 
@@ -212,14 +243,14 @@ static const int CAP_W = 11, CAP_H = 30;
 
 static int Px(float v){ return (int)std::lround(v); }
 
-static BYTE AccentR(){ return 0x3B; } static BYTE AccentG(){ return 0xD9; } static BYTE AccentB(){ return 0xA3; }
+static BYTE AccentR(){ return 0x4C; } static BYTE AccentG(){ return 0xC9; } static BYTE AccentB(){ return 0xF0; }
 static BYTE AmberR(){ return 0xFF; } static BYTE AmberG(){ return 0xB8; } static BYTE AmberB(){ return 0x4C; }
 static BYTE RedR(){ return 0xFF; } static BYTE RedG(){ return 0x5C; } static BYTE RedB(){ return 0x6C; }
 static BYTE CyanR(){ return 0x4C; } static BYTE CyanG(){ return 0xC9; } static BYTE CyanB(){ return 0xF0; }
 
 // 颜色锚点:内存到这两个百分比时,颜色分别正好是原来的"橙"和"红"
-static const double kMemWarn = 60.0;
-static const double kMemCrit = 85.0;
+static const double kMemWarn = 70.0;
+static const double kMemCrit = 90.0;
 // 长条/圆环渐变的跨度:底部取"低这么多百分点"时的颜色
 static const double kMemGradSpan = 25.0;
 
@@ -272,7 +303,7 @@ static Color LerpHsv(const Color& c1, const Color& c2, float t)
     return Color(255, (BYTE)std::lround(r*255.0f), (BYTE)std::lround(g*255.0f), (BYTE)std::lround(b*255.0f));
 }
 
-// 内存占用 -> 状态色:青绿 --(平滑)--> 橙(60%) --(平滑)--> 红(85%)
+// 内存占用 -> 状态色:青蓝 --(平滑)--> 橙(70%) --(平滑)--> 红(90%)
 static Color MemColor(double mem)
 {
     Color g(255, AccentR(), AccentG(), AccentB());
@@ -791,7 +822,7 @@ static void SetAutoStart(bool on)
     }
 }
 
-static const wchar_t* kAppVersion = L"2.0.3";
+static const wchar_t* kAppVersion = L"3.0.0";
 
 static void ShowAbout()
 {
@@ -854,6 +885,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case WM_CREATE:
             g_stats.Init();
             ApplyAcrylicToWindow();
+            ApplyMenuTheme(hwnd);
             SetTimer(hwnd, 1, 1000, nullptr);
             return 0;
         case WM_TIMER:
@@ -885,6 +917,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             ApplyModeSize();
             Render();
             return 0;
+        case WM_SETTINGCHANGE:
+        case WM_THEMECHANGED:
+            // 系统切深色/浅色后菜单立即跟上(其它设置变更交给默认处理)
+            if (msg != WM_SETTINGCHANGE || (lp && wcscmp((const wchar_t*)lp, L"ImmersiveColorSet") == 0)) { ApplyMenuTheme(hwnd); return 0; }
+            break;
         case WM_TRAYICON:
         {
             UINT ev = LOWORD(lp);
@@ -910,6 +947,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
 {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    ApplyMenuTheme(nullptr);   // 尽早声明跟随系统主题
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     GdiplusStartupInput gsi; GdiplusStartup(&g_gdiplusToken, &gsi, nullptr);
     HDC sdc = GetDC(nullptr);

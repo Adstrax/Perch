@@ -1,6 +1,6 @@
 # Perch
 
-> **v2.0.3** &mdash; the memory indicator now fades smoothly between teal, amber and red instead of switching at 60% / 85%, and the capsule bar (plus the floating ring) is filled with a matching gradient. Run `build.bat` to rebuild.
+> **v3.0.0** &mdash; the memory indicator now starts from cyan-blue and only reaches amber at 70% and red at 90%, and the tray menu follows the Windows light / dark theme (the widget itself stays as it is). Run `build.bat` to rebuild.
 
 A tiny, native Windows network-speed monitor widget (C++ / Win32, no .NET).
 
