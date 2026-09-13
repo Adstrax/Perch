@@ -217,12 +217,71 @@ static BYTE AmberR(){ return 0xFF; } static BYTE AmberG(){ return 0xB8; } static
 static BYTE RedR(){ return 0xFF; } static BYTE RedG(){ return 0x5C; } static BYTE RedB(){ return 0x6C; }
 static BYTE CyanR(){ return 0x4C; } static BYTE CyanG(){ return 0xC9; } static BYTE CyanB(){ return 0xF0; }
 
-static COLORREF StateColor(double mem, BYTE& r, BYTE& g, BYTE& b)
+// 颜色锚点:内存到这两个百分比时,颜色分别正好是原来的"橙"和"红"
+static const double kMemWarn = 60.0;
+static const double kMemCrit = 85.0;
+// 长条/圆环渐变的跨度:底部取"低这么多百分点"时的颜色
+static const double kMemGradSpan = 25.0;
+
+static void RgbToHsv(float r, float g, float b, float& h, float& s, float& v)
 {
-    if (mem < 60)  { r=AccentR(); g=AccentG(); b=AccentB(); }
-    else if (mem < 85) { r=AmberR(); g=AmberG(); b=AmberB(); }
-    else           { r=RedR(); g=RedG(); b=RedB(); }
-    return RGB(r,g,b);
+    float mx = std::max(r, std::max(g, b));
+    float mn = std::min(r, std::min(g, b));
+    float d = mx - mn;
+    v = mx;
+    s = (mx <= 0.0f) ? 0.0f : d / mx;
+    if (d <= 0.0f) { h = 0.0f; return; }
+    if (mx == r)      h = (g - b) / d + (g < b ? 6.0f : 0.0f);
+    else if (mx == g) h = (b - r) / d + 2.0f;
+    else              h = (r - g) / d + 4.0f;
+    h /= 6.0f;
+}
+
+static void HsvToRgb(float h, float s, float v, float& r, float& g, float& b)
+{
+    if (s <= 0.0f) { r = g = b = v; return; }
+    float hh = h * 6.0f;
+    int i = (int)std::floor(hh);
+    float f = hh - i;
+    float p = v * (1.0f - s), q = v * (1.0f - s * f), t = v * (1.0f - s * (1.0f - f));
+    switch (i % 6)
+    {
+        case 0:  r = v; g = t; b = p; break;
+        case 1:  r = q; g = v; b = p; break;
+        case 2:  r = p; g = v; b = t; break;
+        case 3:  r = p; g = q; b = v; break;
+        case 4:  r = t; g = p; b = v; break;
+        default: r = v; g = p; b = q; break;
+    }
+}
+
+// 沿色相插值(不走 RGB 直线,否则中间会发灰、出橄榄色)
+static Color LerpHsv(const Color& c1, const Color& c2, float t)
+{
+    if (t <= 0.0f) return c1;
+    if (t >= 1.0f) return c2;
+    float h1, s1, v1, h2, s2, v2;
+    RgbToHsv(c1.GetR()/255.0f, c1.GetG()/255.0f, c1.GetB()/255.0f, h1, s1, v1);
+    RgbToHsv(c2.GetR()/255.0f, c2.GetG()/255.0f, c2.GetB()/255.0f, h2, s2, v2);
+    float dh = h2 - h1;
+    if (dh > 0.5f) dh -= 1.0f; else if (dh < -0.5f) dh += 1.0f;
+    float h = h1 + dh * t;
+    if (h < 0.0f) h += 1.0f; else if (h >= 1.0f) h -= 1.0f;
+    float r, g, b;
+    HsvToRgb(h, s1 + (s2 - s1) * t, v1 + (v2 - v1) * t, r, g, b);
+    return Color(255, (BYTE)std::lround(r*255.0f), (BYTE)std::lround(g*255.0f), (BYTE)std::lround(b*255.0f));
+}
+
+// 内存占用 -> 状态色:青绿 --(平滑)--> 橙(60%) --(平滑)--> 红(85%)
+static Color MemColor(double mem)
+{
+    Color g(255, AccentR(), AccentG(), AccentB());
+    Color a(255, AmberR(), AmberG(), AmberB());
+    Color r(255, RedR(), RedG(), RedB());
+    if (mem <= 0.0) return g;
+    if (mem >= kMemCrit) return r;
+    if (mem < kMemWarn) return LerpHsv(g, a, (float)(mem / kMemWarn));
+    return LerpHsv(a, r, (float)((mem - kMemWarn) / (kMemCrit - kMemWarn)));
 }
 
 // 贴靠边为直角,其它三边圆角
@@ -398,8 +457,9 @@ static void DrawContent(Graphics& g, int w, int h)
     SolidBrush panelBr(Color(0x26, 0x1E, 0x1E, 0x28));
     FillRoundedPanel(g, 0, 0, (float)w, (float)h, rTL, rTR, rBR, rBL, panelBr);
 
-    BYTE ar, ag, ab; StateColor(g_memLoad, ar, ag, ab);
-    Color accent(255, ar, ag, ab);
+    Color accent = MemColor(g_memLoad);                                    // 当前状态色
+    Color accentLow = MemColor(std::max(0.0, g_memLoad - kMemGradSpan));   // 渐变底部(略冷)色
+    BYTE ar = accent.GetR(), ag = accent.GetG(), ab = accent.GetB();
     Color text(255,0xFD,0xFD,0xFD);
     Color dim(255,0xB4,0xC2,0xCE);
 
@@ -416,15 +476,23 @@ static void DrawContent(Graphics& g, int w, int h)
         float ringCx = cx, ringCy = y + rs/2.0f;
         SolidBrush track(Color(0x30,0xFF,0xFF,0xFF));
         g.FillEllipse(&track, ringCx-rs/2.0f, ringCy-rs/2.0f, rs, rs);
-        Pen arcPen(accent, RING_TH*sc);
-        arcPen.SetStartCap(LineCapRound); arcPen.SetEndCap(LineCapRound);
         float sweep = (float)(g_memLoad/100.0*360.0);
         if (sweep > 0.5f)
         {
-            Pen mask(Color(255, ar,ag,ab), RING_TH*sc);
-            // 先画暗弧背景底(把整环填成 track)后,再画亮弧
-            mask.SetStartCap(LineCapRound); mask.SetEndCap(LineCapRound);
-            g.DrawArc(&mask, ringCx-rs/2.0f, ringCy-rs/2.0f, rs, rs, -90.0f, sweep);
+            // 沿弧线扫掠渐变:弧尾偏冷,弧头为当前状态色(分段绘制 + 轻微重叠消除缝隙)
+            const int SEG = 64;
+            for (int i = 0; i < SEG; ++i)
+            {
+                float t0 = (float)i / SEG, t1 = (float)(i + 1) / SEG;
+                float a0 = sweep * t0;
+                float dA = sweep * (t1 - t0);
+                bool last = (i == SEG - 1);
+                if (!last) dA += 0.4f;
+                Pen seg(LerpHsv(accentLow, accent, (t0 + t1) * 0.5f), RING_TH*sc);
+                if (i == 0) seg.SetStartCap(LineCapRound);
+                if (last)   seg.SetEndCap(LineCapRound);
+                g.DrawArc(&seg, ringCx-rs/2.0f, ringCy-rs/2.0f, rs, rs, -90.0f + a0, dA);
+            }
         }
         // 中心百分比
         Font fp(L"Segoe UI", 10.0f*sc, FontStyleBold, UnitPixel, nullptr);
@@ -443,9 +511,11 @@ static void DrawContent(Graphics& g, int w, int h)
         float fh = capH * (float)(g_memLoad/100.0);
         if (fh > 0.5f)
         {
-            SolidBrush fs(accent);
             float fr = std::min(capW/2.0f, fh/2.0f);
-            FillRoundedPanel(g, capX, cy+capH-fh, capW, fh, fr, fr, fr, fr, fs);
+            // 纵向渐变:底部偏冷(低占用率对应的颜色),顶部是当前状态色
+            LinearGradientBrush lg(PointF(capX, cy+capH), PointF(capX, cy+capH-fh), accentLow, accent);
+            lg.SetWrapMode(WrapModeClamp);
+            FillRoundedPanel(g, capX, cy+capH-fh, capW, fh, fr, fr, fr, fr, lg);
         }
 
         y = cy + capH + Px(6*sc);
@@ -721,7 +791,7 @@ static void SetAutoStart(bool on)
     }
 }
 
-static const wchar_t* kAppVersion = L"2.0.2";
+static const wchar_t* kAppVersion = L"2.0.3";
 
 static void ShowAbout()
 {

@@ -1,6 +1,6 @@
 # Perch
 
-> **v2.0.2** &mdash; fixes the speed readout so the decimal digit is never clipped (the number now shrinks to fit instead of being cut short, e.g. "50."), and makes the readings accurate: per-adapter filter-driver interfaces are no longer counted several times over, and sampling now uses 64-bit interface counters. Run `build.bat` to rebuild.
+> **v2.0.3** &mdash; the memory indicator now fades smoothly between teal, amber and red instead of switching at 60% / 85%, and the capsule bar (plus the floating ring) is filled with a matching gradient. Run `build.bat` to rebuild.
 
 A tiny, native Windows network-speed monitor widget (C++ / Win32, no .NET).
 
