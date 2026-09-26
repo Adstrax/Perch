@@ -581,11 +581,41 @@ static void DrawContent(Graphics& g, int w, int h)
     g.DrawString(FormatPct((unsigned int)g_cpu).c_str(), -1, &fCpu, cpuV, &cf, &cpuVal);
 }
 
+// 超采样倍率:先在放大 kSuperSample 倍的画布上绘制,再缩回窗口尺寸。
+// 这样文字和小图形的边缘会得到真正的灰阶过渡,而不是整像素的阶梯。
+static const int kSuperSample = 3;
+
 static void Render()
 {
     RECT rc{}; GetClientRect(g_hwnd, &rc);
     int w = rc.right, h = rc.bottom;
     if (w<=0||h<=0) return;
+    const int ss = kSuperSample;
+
+    HDC screen = GetDC(nullptr);
+
+    // 1) 放大画布上绘制
+    BITMAPINFO bmiBig{};
+    bmiBig.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmiBig.bmiHeader.biWidth = w*ss;
+    bmiBig.bmiHeader.biHeight = -h*ss;
+    bmiBig.bmiHeader.biPlanes = 1;
+    bmiBig.bmiHeader.biBitCount = 32;
+    bmiBig.bmiHeader.biCompression = BI_RGB;
+    void* bitsBig = nullptr;
+    HBITMAP dibBig = CreateDIBSection(screen, &bmiBig, DIB_RGB_COLORS, &bitsBig, nullptr, 0);
+    if (!dibBig || !bitsBig) { if(dibBig) DeleteObject(dibBig); ReleaseDC(nullptr, screen); return; }
+    HDC memBig = CreateCompatibleDC(screen);
+    HBITMAP oldBig = (HBITMAP)SelectObject(memBig, dibBig);
+    {
+        Graphics g(memBig);
+        g.Clear(Color(0,0,0,0));
+        g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+        g.ScaleTransform((REAL)ss, (REAL)ss);
+        DrawContent(g, w, h);
+    }
+
+    // 2) 缩回原尺寸:按预乘 alpha 做盒式滤波,半透明边缘不会发黑/发灰
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = w;
@@ -593,23 +623,41 @@ static void Render()
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
-    HDC screen = GetDC(nullptr);
     void* bits = nullptr;
     HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!dib || !bits) { if(dib) DeleteObject(dib); ReleaseDC(nullptr, screen); return; }
+    if (!dib || !bits) { DeleteObject(dibBig); DeleteDC(memBig); ReleaseDC(nullptr, screen); return; }
     HDC mem = CreateCompatibleDC(screen);
     HBITMAP oldb = (HBITMAP)SelectObject(mem, dib);
     {
-        Graphics g(mem);
-        g.Clear(Color(0,0,0,0));
-        DrawContent(g, w, h);
+        const int n = ss*ss, sw = w*ss;
+        const BYTE* s = (const BYTE*)bitsBig;
+        BYTE* d = (BYTE*)bits;
+        for (int y=0; y<h; ++y)
+        {
+            for (int x=0; x<w; ++x)
+            {
+                int sa=0, sr=0, sg=0, sb=0;
+                for (int j=0; j<ss; ++j)
+                {
+                    for (int k=0; k<ss; ++k)
+                    {
+                        const BYTE* p = s + (((size_t)(y*ss+j)*sw) + (size_t)(x*ss+k))*4;
+                        int a = p[3];
+                        sa += a;
+                        sb += p[0]*a/255; sg += p[1]*a/255; sr += p[2]*a/255;
+                    }
+                }
+                BYTE* o = d + ((size_t)y*w + x)*4;
+                o[0]=(BYTE)(sb/n); o[1]=(BYTE)(sg/n); o[2]=(BYTE)(sr/n); o[3]=(BYTE)(sa/n);
+            }
+        }
     }
-    BYTE* q = (BYTE*)bits;
-    for (int i=0;i<w*h;i++){ BYTE a=q[3]; if(a<255){ q[0]=(BYTE)(q[0]*a/255); q[1]=(BYTE)(q[1]*a/255); q[2]=(BYTE)(q[2]*a/255); } q+=4; }
     POINT src{0,0}, dst{0,0}; SIZE sz{w,h};
     BLENDFUNCTION bf{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
     UpdateLayeredWindow(g_hwnd, screen, nullptr, &sz, mem, &src, 0, &bf, ULW_ALPHA);
-    SelectObject(mem, oldb); DeleteDC(mem); DeleteObject(dib); ReleaseDC(nullptr, screen);
+    SelectObject(mem, oldb); DeleteDC(mem); DeleteObject(dib);
+    SelectObject(memBig, oldBig); DeleteDC(memBig); DeleteObject(dibBig);
+    ReleaseDC(nullptr, screen);
 }
 // ---------------- 贴靠/菜单/WndProc ----------------
 #define WM_TRAYICON (WM_APP + 1)
@@ -822,7 +870,7 @@ static void SetAutoStart(bool on)
     }
 }
 
-static const wchar_t* kAppVersion = L"3.0.0";
+static const wchar_t* kAppVersion = L"3.0.1";
 
 static void ShowAbout()
 {

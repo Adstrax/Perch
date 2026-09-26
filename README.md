@@ -1,6 +1,6 @@
 # Perch
 
-> **v3.0.0** &mdash; the memory indicator now starts from cyan-blue and only reaches amber at 70% and red at 90%, and the tray menu follows the Windows light / dark theme (the widget itself stays as it is). Run `build.bat` to rebuild.
+> **v3.0.1** &mdash; the widget is now rendered with 3x supersampling and then downscaled, so text and small shapes get proper anti-aliased edges instead of stair-stepped ones. Run `build.bat` to rebuild.
 
 A tiny, native Windows network-speed monitor widget (C++ / Win32, no .NET).
 
