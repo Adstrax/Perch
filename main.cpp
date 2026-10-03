@@ -236,6 +236,7 @@ static const wchar_t* kStateKey = L"Software\\Perch";
 static const wchar_t* kStateEdge = L"DockEdge";
 static const wchar_t* kStateX = L"DockX";
 static const wchar_t* kStateY = L"DockY";
+static const wchar_t* kStateTray = L"ShowTrayIcon";
 
 static const int CW_FLOAT = 40, CW_DOCK = 36, CH = 192;
 static const int RING = 26, RING_TH = 5, DOT = 9;
@@ -663,6 +664,8 @@ static void Render()
 #define WM_TRAYICON (WM_APP + 1)
 #define TRAY_UID 1
 static bool g_topmost = false;
+static bool g_showTray = true;      // 托盘图标是否显示(菜单里可关)
+static UINT g_wmTaskbarCreated = 0;  // 资源管理器重启后把图标补回来
 
 static int clamp(int v,int lo,int hi){ return v<lo?lo:(v>hi?hi:v); }
 
@@ -805,6 +808,45 @@ static void AddTray(HWND hwnd)
     if (nid.hIcon) DestroyIcon(nid.hIcon);
 }
 
+static void RemoveTray(HWND hwnd)
+{
+    NOTIFYICONDATAW nid{};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = hwnd;
+    nid.uID = TRAY_UID;
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+}
+
+// 开关存注册表,重启后保持
+static bool ReadShowTray()
+{
+    DWORD v = 1, sz = sizeof(v), type = 0; HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kStateKey, 0, KEY_READ, &k) == ERROR_SUCCESS)
+    {
+        if (RegQueryValueExW(k, kStateTray, nullptr, &type, (BYTE*)&v, &sz) != ERROR_SUCCESS) v = 1;
+        RegCloseKey(k);
+    }
+    return v != 0;
+}
+
+static void SaveShowTray(bool on)
+{
+    HKEY k; DWORD disp;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kStateKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, &disp) == ERROR_SUCCESS)
+    {
+        DWORD v = on ? 1 : 0;
+        RegSetValueExW(k, kStateTray, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
+        RegCloseKey(k);
+    }
+}
+
+static void SetShowTray(bool on)
+{
+    g_showTray = on;
+    SaveShowTray(on);
+    if (on) AddTray(g_hwnd); else RemoveTray(g_hwnd);
+}
+
 static void ToggleVisible()
 {
     if (IsWindowVisible(g_hwnd)) ShowWindow(g_hwnd, SW_HIDE);
@@ -870,7 +912,7 @@ static void SetAutoStart(bool on)
     }
 }
 
-static const wchar_t* kAppVersion = L"3.0.1";
+static const wchar_t* kAppVersion = L"3.1.0";
 
 static void ShowAbout()
 {
@@ -901,6 +943,7 @@ static void HandleMenuCommand(int cmd)
         case 22: ShowWindow(g_hwnd, SW_HIDE); break;
         case 23: PostMessageW(g_hwnd, WM_CLOSE, 0, 0); break;
         case 24: ShowAbout(); break;
+        case 25: SetShowTray(!g_showTray); break;
     }
 }
 
@@ -914,8 +957,10 @@ static void ShowMenu()
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (g_topmost ? MF_CHECKED : 0), 20, L"Always on top");
     AppendMenuW(menu, MF_STRING | (IsAutoStart() ? MF_CHECKED : 0), 21, L"Start with Windows");
+    AppendMenuW(menu, MF_STRING | (g_showTray ? MF_CHECKED : 0), 25, L"Tray icon");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 22, L"Hide to tray");
+    // 托盘图标关掉后,"隐藏到托盘"会把唯一入口也藏掉,所以此时禁用这一项
+    AppendMenuW(menu, MF_STRING | (g_showTray ? 0 : MF_GRAYED), 22, L"Hide to tray");
     AppendMenuW(menu, MF_STRING, 23, L"Exit");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 24, L"About Perch");
@@ -928,6 +973,12 @@ static void ShowMenu()
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    // 资源管理器重启会清掉托盘图标,收到广播后补回来
+    if (g_wmTaskbarCreated && msg == g_wmTaskbarCreated)
+    {
+        if (g_showTray) AddTray(hwnd);
+        return 0;
+    }
     switch (msg)
     {
         case WM_CREATE:
@@ -952,6 +1003,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case WM_LBUTTONDOWN:
             ReleaseCapture();
             SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+            return 0;
+        case WM_RBUTTONUP:
+            ShowMenu();   // 组件上右键 = 同一个菜单(托盘图标隐藏后仍有入口)
             return 0;
         case WM_EXITSIZEMOVE:
             HandleDragEnd();
@@ -985,7 +1039,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         case WM_DESTROY:
             KillTimer(hwnd, 1);
-            { NOTIFYICONDATAW nid{}; nid.cbSize=sizeof(nid); nid.hWnd=hwnd; nid.uID=TRAY_UID; Shell_NotifyIconW(NIM_DELETE,&nid); }
+            RemoveTray(hwnd);
             PostQuitMessage(0);
             return 0;
     }
@@ -1019,7 +1073,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     ApplyAcrylicToWindow();
     ApplyModeSize();
 
-    AddTray(g_hwnd);
+    g_wmTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+    g_showTray = ReadShowTray();
+    if (g_showTray) AddTray(g_hwnd);
     ShowWindow(g_hwnd, SW_SHOW);
     if (IsAutoStart()) EnsureStartupShortcut(true);
     // 开机默认贴靠到上次用的边(默认右侧)
