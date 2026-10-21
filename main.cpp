@@ -666,6 +666,7 @@ static void Render()
 static bool g_topmost = false;
 static bool g_showTray = true;      // 托盘图标是否显示(菜单里可关)
 static UINT g_wmTaskbarCreated = 0;  // 资源管理器重启后把图标补回来
+static HANDLE g_hSingleInstance = nullptr;  // 单实例锁,进程存活期间一直持有
 
 static int clamp(int v,int lo,int hi){ return v<lo?lo:(v>hi?hi:v); }
 
@@ -912,7 +913,7 @@ static void SetAutoStart(bool on)
     }
 }
 
-static const wchar_t* kAppVersion = L"3.1.0";
+static const wchar_t* kAppVersion = L"3.2.0";
 
 static void ShowAbout()
 {
@@ -1046,8 +1047,47 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+
+// 重复启动:把已经在运行的组件叫到前台,并提示一次(连点多次只弹一个框)
+static void NotifyAlreadyRunning()
+{
+    HWND existing = FindWindowW(L"PerchWnd", nullptr);
+    if (existing)
+    {
+        if (IsIconic(existing)) ShowWindow(existing, SW_RESTORE);
+        else if (!IsWindowVisible(existing)) ShowWindow(existing, SW_SHOW);
+        SetForegroundWindow(existing);
+        BringWindowToTop(existing);
+        FLASHWINFO fi{};
+        fi.cbSize = sizeof(fi);
+        fi.hwnd = existing;
+        fi.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG;
+        fi.uCount = 3;
+        FlashWindowEx(&fi);
+    }
+
+    // 第二个锁只用于"正在提示"这个瞬间,避免连续启动时堆出一叠提示框
+    HANDLE notice = CreateMutexW(nullptr, TRUE, L"Local\\Perch.RepeatLaunchNotice");
+    if (notice && GetLastError() != ERROR_ALREADY_EXISTS)
+    {
+        MessageBoxW(existing, L"Perch is already running.\n\nThe existing widget has been brought to the front.",
+                    L"Perch", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
+        ReleaseMutex(notice);
+    }
+    if (notice) CloseHandle(notice);
+}
+
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
 {
+    // 单实例:同一会话里只允许一个 Perch 在跑
+    g_hSingleInstance = CreateMutexW(nullptr, TRUE, L"Local\\Perch.SingleInstance");
+    if (g_hSingleInstance && GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        NotifyAlreadyRunning();
+        CloseHandle(g_hSingleInstance);
+        return 0;
+    }
+
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     ApplyMenuTheme(nullptr);   // 尽早声明跟随系统主题
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
