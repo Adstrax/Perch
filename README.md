@@ -1,6 +1,6 @@
 # Perch
 
-> **v3.3.1** &mdash; the context menu now has a correct top-dock icon, opens About from the clickable header, and keeps a simpler action list.
+> **v3.4.0** &mdash; the context menu now has a correct top-dock icon, opens About from the clickable header, and keeps a simpler action list.
 
 A tiny, native Windows network-speed monitor widget (C++ / Win32, no .NET).
 
