@@ -35,8 +35,8 @@ using namespace Gdiplus;
 // ---------------- 亚克力(WCA) ----------------
 #pragma pack(push,1)
 struct ACCENTPOLICY { int nAccentState; int nFlags; unsigned int nColor; int nAnimationId; };
-struct WINCOMPATTRDATA { int nAttribute; void* pData; unsigned long ulDataSize; };
 #pragma pack(pop)
+struct WINCOMPATTRDATA { int nAttribute; void* pData; SIZE_T ulDataSize; };
 
 static int (WINAPI* pSetWindowCompositionAttribute)(HWND, WINCOMPATTRDATA*) = nullptr;
 
@@ -51,10 +51,10 @@ static void LoadAcrylicApi()
 }
 
 // 给无边框窗口开启真亚克力背景模糊。颜色为 AABBGGRR。
-static void EnableAcrylic(HWND hwnd, unsigned int color)
+static bool EnableAcrylic(HWND hwnd, unsigned int color)
 {
     LoadAcrylicApi();
-    if (!pSetWindowCompositionAttribute) return;
+    if (!pSetWindowCompositionAttribute) return false;
     ACCENTPOLICY ap{};
     ap.nAccentState = 4;
     ap.nFlags = 2;
@@ -64,7 +64,7 @@ static void EnableAcrylic(HWND hwnd, unsigned int color)
     wc.nAttribute = 19;
     wc.pData = &ap;
     wc.ulDataSize = sizeof(ap);
-    pSetWindowCompositionAttribute(hwnd, &wc);
+    return pSetWindowCompositionAttribute(hwnd, &wc) != 0;
 }
 
 // ---------------- 深色菜单(uxtheme 未公开接口) ----------------
@@ -219,6 +219,7 @@ static std::wstring FormatPct(unsigned int pct){ wchar_t b[16]; swprintf(b,16,L"
 
 // ---------------- 全局状态 ----------------
 enum class Mode { Float, DockLeft, DockRight, DockTop, DockBottom };
+static bool IsHorizontalDock(Mode m){ return m == Mode::DockTop || m == Mode::DockBottom; }
 
 static HWND g_hwnd = nullptr;
 static StatsSampler g_stats;
@@ -239,6 +240,8 @@ static const wchar_t* kStateY = L"DockY";
 static const wchar_t* kStateTray = L"ShowTrayIcon";
 
 static const int CW_FLOAT = 40, CW_DOCK = 36, CH = 192;
+// 顶部/底部吸附用横向条:更宽更矮
+static const int CW_DOCK_H = 268, CH_HORIZ = 40;
 static const int RING = 26, RING_TH = 5, DOT = 9;
 static const int CAP_W = 11, CAP_H = 30;
 
@@ -354,8 +357,9 @@ static void ApplyRegion()
 static void ApplyModeSize()
 {
     float sc = g_dpi/96.0f;
-    int w = Px((g_mode==Mode::Float ? CW_FLOAT : CW_DOCK)*sc);
-    int h = Px(CH*sc);
+    bool horiz = IsHorizontalDock(g_mode);
+    int w = Px((g_mode==Mode::Float ? CW_FLOAT : (horiz ? CW_DOCK_H : CW_DOCK))*sc);
+    int h = Px((horiz ? CH_HORIZ : CH)*sc);
     SetWindowPos(g_hwnd, nullptr, 0,0, w, h, SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
 }
 
@@ -473,6 +477,108 @@ static void FillBird(Graphics& g, float cx, float cy, float size, const Brush& b
     g.FillPath(&br, &p);
 }
 
+// 横向模式用的一行 "▲ 5.2 K/s"(箭头 + 数值 + 单位),自动缩字号以免裁切
+static void DrawSpeedInline(Graphics& g, float cx, float cy, float maxW,
+                            const std::wstring& value, const std::wstring& unit,
+                            bool up, BYTE arrR, BYTE arrG, BYTE arrB, float basePx)
+{
+    float sc = g_dpi/96.0f;
+    const float unitPx = 9.5f*sc;
+    Font probe(L"Segoe UI", basePx, FontStyleBold, UnitPixel, nullptr);
+    Font fUnit(L"Segoe UI", unitPx, FontStyleBold, UnitPixel, nullptr);
+    RectF bv{}, bu{};
+    g.MeasureString(value.c_str(), -1, &probe, PointF(0,0), &bv);
+    g.MeasureString(unit.c_str(), -1, &fUnit, PointF(0,0), &bu);
+    const float aw = Px(6.0f*sc), gap = Px(3.0f*sc), gap2 = Px(3.0f*sc);
+    float fixedW = aw + gap + gap2 + bu.Width;
+    float scale = 1.0f;
+    if (bv.Width + fixedW > maxW && bv.Width > 0.0f) scale = (maxW - fixedW) / bv.Width;
+    if (scale > 1.0f) scale = 1.0f;
+    if (scale < 0.55f) scale = 0.55f;
+    Font fVal(L"Segoe UI", basePx*scale, FontStyleBold, UnitPixel, nullptr);
+    if (scale < 1.0f) g.MeasureString(value.c_str(), -1, &fVal, PointF(0,0), &bv);
+
+    float total = aw + gap + bv.Width + gap2 + bu.Width;
+    float x = cx - total/2.0f;
+    float lineH = Px(18.0f*sc);
+
+    float ah = Px(7.0f*sc), triCx = x + aw/2.0f;
+    PointF pts[3];
+    if (up) { pts[0]=PointF(triCx-aw/2.0f, cy+ah/2.0f); pts[1]=PointF(triCx+aw/2.0f, cy+ah/2.0f); pts[2]=PointF(triCx, cy-ah/2.0f); }
+    else    { pts[0]=PointF(triCx-aw/2.0f, cy-ah/2.0f); pts[1]=PointF(triCx+aw/2.0f, cy-ah/2.0f); pts[2]=PointF(triCx, cy+ah/2.0f); }
+    SolidBrush aBr(Color(255,arrR,arrG,arrB));
+    g.FillPolygon(&aBr, pts, 3);
+
+    StringFormat lf; lf.SetAlignment(StringAlignmentNear); lf.SetLineAlignment(StringAlignmentCenter);
+    SolidBrush vBr(Color(255,0xFD,0xFD,0xFD));
+    SolidBrush uBr(Color(255,0xB4,0xC2,0xCE));
+    float vx = x + aw + gap;
+    g.DrawString(value.c_str(), -1, &fVal, RectF(vx, cy-lineH/2.0f, bv.Width + Px(6*sc), lineH), &lf, &vBr);
+    g.DrawString(unit.c_str(), -1, &fUnit, RectF(vx + bv.Width + gap2, cy-lineH/2.0f, bu.Width + Px(6*sc), lineH), &lf, &uBr);
+}
+
+// 顶部/底部吸附:横向条 [盾牌+内存条 | ▲网速 | ▼网速 | CPU]
+static void DrawContentHorizontal(Graphics& g, int w, int h, const Color& accent, const Color& accentLow)
+{
+    float sc = g_dpi/96.0f;
+    float cy = h/2.0f;
+
+    // 左:状态盾牌 + 横向内存条(从左往右填充)
+    float sw = Px(11.0f*sc), sh = Px(13.0f*sc);
+    SolidBrush shBr(accent);
+    FillShield(g, Px(14.0f*sc), cy - sh/2.0f, sw, sh, shBr);
+
+    float barX = Px(23.0f*sc), barW = Px(26.0f*sc), barH = Px(10.0f*sc);
+    float barY = cy - barH/2.0f;
+    SolidBrush track(Color(0x30,0xFF,0xFF,0xFF));
+    FillRoundedPanel(g, barX, barY, barW, barH, barH/2.0f, barH/2.0f, barH/2.0f, barH/2.0f, track);
+    float fw = barW * (float)(g_memLoad/100.0);
+    if (fw > 0.5f)
+    {
+        float fr = std::min(barH/2.0f, fw/2.0f);
+        LinearGradientBrush lg(PointF(barX, barY), PointF(barX+fw, barY), accentLow, accent);
+        lg.SetWrapMode(WrapModeClamp);
+        FillRoundedPanel(g, barX, barY, fw, barH, fr, fr, fr, fr, lg);
+    }
+
+    // 分区坐标:CPU 从右往左排,保证右边距固定
+    float pad = Px(8.0f*sc);
+    float cpuW = Px(52.0f*sc);
+    float cpuCx = w - pad - cpuW/2.0f;
+    float d2 = w - pad - cpuW - Px(8.0f*sc);
+    float downW = Px(64.0f*sc);
+    float downCx = d2 - Px(8.0f*sc) - downW/2.0f;
+    float upW = Px(60.0f*sc);
+    float upCx = downCx - downW/2.0f - Px(6.0f*sc) - upW/2.0f;
+    float d1 = upCx - upW/2.0f - Px(8.0f*sc);
+
+    SolidBrush sep(Color(0x24,0xFF,0xFF,0xFF));
+    float divH = Px(18.0f*sc), divW = Px(1.0f*sc);
+    g.FillRectangle(&sep, d1, cy-divH/2.0f, divW, divH);
+    g.FillRectangle(&sep, d2, cy-divH/2.0f, divW, divH);
+
+    std::wstring uv, uu; FormatSpeed(g_upBps, uv, uu);
+    std::wstring dv, du; FormatSpeed(g_downBps, dv, du);
+    DrawSpeedInline(g, upCx, cy, upW, uv, uu, true, CyanR(), CyanG(), CyanB(), 12.0f*sc);
+    DrawSpeedInline(g, downCx, cy, downW, dv, du, false, accent.GetR(), accent.GetG(), accent.GetB(), 12.0f*sc);
+
+    // CPU:标签 + 百分比同一行
+    Font fBadge(L"Segoe UI", 9.0f*sc, FontStyleBold, UnitPixel, nullptr);
+    Font fVal(L"Segoe UI", 12.0f*sc, FontStyleBold, UnitPixel, nullptr);
+    RectF bb{}, bv{};
+    g.MeasureString(L"CPU", -1, &fBadge, PointF(0,0), &bb);
+    std::wstring cpuv = FormatPct((unsigned int)g_cpu);
+    g.MeasureString(cpuv.c_str(), -1, &fVal, PointF(0,0), &bv);
+    float gap = Px(4.0f*sc);
+    float total = bb.Width + gap + bv.Width;
+    float x = cpuCx - total/2.0f;
+    float lineH = Px(18.0f*sc);
+    StringFormat lf; lf.SetAlignment(StringAlignmentNear); lf.SetLineAlignment(StringAlignmentCenter);
+    SolidBrush cb(Color(255,CyanR(),CyanG(),CyanB()));
+    SolidBrush cv(Color(255,0xFD,0xFD,0xFD));
+    g.DrawString(L"CPU", -1, &fBadge, RectF(x, cy-lineH/2.0f, bb.Width + Px(4*sc), lineH), &lf, &cb);
+    g.DrawString(cpuv.c_str(), -1, &fVal, RectF(x + bb.Width + gap, cy-lineH/2.0f, bv.Width + Px(4*sc), lineH), &lf, &cv);
+}
 static void DrawContent(Graphics& g, int w, int h)
 {
     g.SetSmoothingMode(SmoothingModeAntiAlias);
@@ -491,6 +597,7 @@ static void DrawContent(Graphics& g, int w, int h)
 
     Color accent = MemColor(g_memLoad);                                    // 当前状态色
     Color accentLow = MemColor(std::max(0.0, g_memLoad - kMemGradSpan));   // 渐变底部(略冷)色
+    if (IsHorizontalDock(g_mode)) { DrawContentHorizontal(g, w, h, accent, accentLow); return; }
     BYTE ar = accent.GetR(), ag = accent.GetG(), ab = accent.GetB();
     Color text(255,0xFD,0xFD,0xFD);
     Color dim(255,0xB4,0xC2,0xCE);
@@ -679,10 +786,9 @@ static void UpdateStats()
 
 static void ApplyAcrylicToWindow()
 {
-    // 分层窗口上启用亚克力背景模糊
+    // 主组件继续使用原来的分层 GDI+ 面板外观;WCA 只用于自绘右键菜单。
     MARGINS mg{-1,-1,-1,-1};
     DwmExtendFrameIntoClientArea(g_hwnd, &mg);
-    EnableAcrylic(g_hwnd, 0x991E1E28u); // AABBGGRR
 }
 
 static int ReadDockEdge()
@@ -744,6 +850,13 @@ static void RestoreDockState()
     int x, y; bool have;
     if (ReadDockPos(have, x, y) && have) { }
     else { x = wa.right - cw; y = wa.top + (wa.bottom - wa.top - ch) / 2; }
+    // 横向/竖向尺寸可能变过:恢复时夹回屏幕,并重新贴紧对应的边
+    x = clamp(x, wa.left, wa.right - cw);
+    y = clamp(y, wa.top, wa.bottom - ch);
+    if (g_mode == Mode::DockLeft) x = wa.left;
+    else if (g_mode == Mode::DockRight) x = wa.right - cw;
+    else if (g_mode == Mode::DockTop) y = wa.top;
+    else if (g_mode == Mode::DockBottom) y = wa.bottom - ch;
     SetWindowPos(g_hwnd, nullptr, x, y, cw, ch, SWP_NOZORDER|SWP_NOACTIVATE);
     SaveDockEdge((int)g_mode);
     SaveDockPos(x, y);
@@ -913,7 +1026,7 @@ static void SetAutoStart(bool on)
     }
 }
 
-static const wchar_t* kAppVersion = L"3.2.0";
+static const wchar_t* kAppVersion = L"3.3.0";
 
 static void ShowAbout()
 {
@@ -948,28 +1061,759 @@ static void HandleMenuCommand(int cmd)
     }
 }
 
+// ---------------- Win11 自绘右键菜单 ----------------
+enum class MenuIcon
+{
+    DockLeft,
+    DockRight,
+    DockTop,
+    DockBottom,
+    Pin,
+    Startup,
+    Tray,
+    Hide,
+    Exit,
+    About
+};
+
+struct MenuItemModel
+{
+    int command;
+    const wchar_t* label;
+    MenuIcon icon;
+    bool checked;
+    bool enabled;
+};
+
+struct MenuRowLayout
+{
+    RECT rect;
+    int itemIndex;
+    bool enabled;
+};
+
+static const wchar_t* kMenuClass = L"PerchMenuWnd";
+static const wchar_t* kMenuOverlayClass = L"PerchMenuOverlayWnd";
+static HWND g_menuHwnd = nullptr;
+static HWND g_menuOverlay = nullptr;
+static std::vector<MenuItemModel> g_menuItems;
+static std::vector<MenuRowLayout> g_menuRows;
+static float g_menuScale = 1.0f;
+static int g_menuShadow = 0;
+static int g_menuContentW = 0;
+static int g_menuContentH = 0;
+static int g_menuHover = -1;
+static int g_menuMouseDown = -1;
+static bool g_menuDark = true;
+static bool g_menuTransparency = true;
+static bool g_menuBackdropOk = false;
+static bool g_menuEverActive = false;
+static bool g_menuClosing = false;
+static bool g_menuTrackingMouse = false;
+static LRESULT CALLBACK MenuWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+static LRESULT CALLBACK MenuOverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+
+static bool ReadThemeDword(const wchar_t* name, DWORD fallback)
+{
+    DWORD value = fallback;
+    DWORD size = sizeof(value);
+    RegGetValueW(HKEY_CURRENT_USER,
+                 L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                 name, RRF_RT_REG_DWORD, nullptr, &value, &size);
+    return value != 0;
+}
+
+static bool MenuGroupBreakAfter(int command)
+{
+    return command == 13 || command == 25 || command == 23;
+}
+
+static UINT MenuDpiForMonitor(HMONITOR monitor)
+{
+    using GetDpiForMonitorFn = HRESULT (WINAPI*)(HMONITOR, int, UINT*, UINT*);
+    static HMODULE shcore = LoadLibraryW(L"shcore.dll");
+    static GetDpiForMonitorFn getDpiForMonitor = shcore
+        ? (GetDpiForMonitorFn)GetProcAddress(shcore, "GetDpiForMonitor")
+        : nullptr;
+
+    UINT dpiX = 0, dpiY = 0;
+    if (getDpiForMonitor &&
+        SUCCEEDED(getDpiForMonitor(monitor, 0, &dpiX, &dpiY)) &&
+        dpiX >= 96)
+    {
+        return dpiX;
+    }
+    UINT windowDpi = g_hwnd ? GetDpiForWindow(g_hwnd) : 0;
+    return windowDpi ? windowDpi : 96;
+}
+
+static bool ApplyMenuBackdrop(HWND hwnd)
+{
+    if (!g_menuTransparency) return false;
+
+    int darkMode = g_menuDark ? 1 : 0;
+    DwmSetWindowAttribute(hwnd, 20, &darkMode, sizeof(darkMode));
+
+    int captionColor = -2;
+    DwmSetWindowAttribute(hwnd, 35, &captionColor, sizeof(captionColor));
+
+    int cornerPreference = 2; // DWMWCP_ROUND
+    DwmSetWindowAttribute(hwnd, 33, &cornerPreference, sizeof(cornerPreference));
+
+    MARGINS margins{-1, -1, -1, -1};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+
+    // QKN 模板的菜单底色:深色 #20242A / 浅色 #F8F6F4,Acrylic 不透明度 30%。
+    unsigned int tint = g_menuDark ? 0x4D2A2420u : 0x4DF4F6F8u;
+    return EnableAcrylic(hwnd, tint);
+}
+
+static float MenuContentHeightLogical()
+{
+    float height = 4.0f + 32.0f;
+    for (size_t i = 0; i < g_menuItems.size(); ++i)
+    {
+        if (i > 0 && MenuGroupBreakAfter(g_menuItems[i - 1].command))
+            height += 9.0f;
+        height += 28.0f;
+    }
+    return height + 4.0f;
+}
+
+static void RebuildMenuLayout()
+{
+    g_menuRows.clear();
+    const float sc = g_menuScale;
+    const float rowX = (float)g_menuShadow + 4.0f * sc;
+    const float rowW = (float)g_menuContentW - 8.0f * sc;
+    float y = (float)g_menuShadow + 4.0f * sc + 32.0f * sc;
+
+    for (size_t i = 0; i < g_menuItems.size(); ++i)
+    {
+        if (i > 0 && MenuGroupBreakAfter(g_menuItems[i - 1].command))
+            y += 9.0f * sc;
+
+        RECT row{};
+        row.left = Px(rowX);
+        row.top = Px(y);
+        row.right = Px(rowX + rowW);
+        row.bottom = Px(y + 28.0f * sc);
+        g_menuRows.push_back({row, (int)i, g_menuItems[i].enabled});
+        y += 28.0f * sc;
+    }
+}
+
+static MenuRowLayout* MenuRowAt(int x, int y)
+{
+    POINT pt{x, y};
+    for (auto& row : g_menuRows)
+    {
+        if (PtInRect(&row.rect, pt))
+            return &row;
+    }
+    return nullptr;
+}
+
+static int MenuFirstEnabled()
+{
+    for (size_t i = 0; i < g_menuRows.size(); ++i)
+        if (g_menuRows[i].enabled) return (int)i;
+    return -1;
+}
+
+static int MenuNextEnabled(int current, int delta)
+{
+    if (g_menuRows.empty()) return -1;
+    int count = (int)g_menuRows.size();
+    int index = current;
+    for (int step = 0; step < count; ++step)
+    {
+        index += delta;
+        if (index < 0) index = count - 1;
+        if (index >= count) index = 0;
+        if (g_menuRows[index].enabled) return index;
+    }
+    return -1;
+}
+
+static const wchar_t* MenuFluentFontFace()
+{
+    static wchar_t face[LF_FACESIZE]{};
+    if (face[0]) return face;
+
+    FontFamily fluent(L"Segoe Fluent Icons");
+    if (fluent.GetLastStatus() == Ok)
+        wcscpy_s(face, L"Segoe Fluent Icons");
+    else
+        wcscpy_s(face, L"Segoe MDL2 Assets");
+    return face;
+}
+
+static wchar_t MenuFluentGlyph(MenuIcon icon)
+{
+    switch (icon)
+    {
+        case MenuIcon::DockLeft:   return L'\uE90C';
+        case MenuIcon::DockRight:  return L'\uE90D';
+        case MenuIcon::DockTop:    return L'\uE952';
+        case MenuIcon::DockBottom: return L'\uE90E';
+        case MenuIcon::Pin:        return L'\uE718';
+        case MenuIcon::Startup:    return L'\uE7E8';
+        case MenuIcon::Tray:       return L'\uE770';
+        case MenuIcon::Hide:       return L'\uE9A9';
+        case MenuIcon::Exit:       return L'\uE8BB';
+        case MenuIcon::About:      return L'\uE946';
+    }
+    return L'\uE946';
+}
+
+static void MenuDrawFluentGlyph(Graphics& g, const wchar_t* glyph, float size,
+                                const RectF& box, const Color& color)
+{
+    Font font(MenuFluentFontFace(), size, FontStyleRegular, UnitPixel, nullptr);
+    SolidBrush brush(color);
+    StringFormat format;
+    format.SetAlignment(StringAlignmentCenter);
+    format.SetLineAlignment(StringAlignmentCenter);
+    g.DrawString(glyph, -1, &font, box, &format, &brush);
+}
+
+static void MenuDrawIcon(Graphics& g, MenuIcon icon, float cx, float cy, float sc,
+                         const Color& color, const Color& accent)
+{
+    (void)accent;
+    const wchar_t glyph[2] = {MenuFluentGlyph(icon), 0};
+    MenuDrawFluentGlyph(g, glyph, 14.5f * sc,
+                        RectF(cx - 8.0f * sc, cy - 9.0f * sc, 16.0f * sc, 18.0f * sc),
+                        color);
+}
+
+static void DrawMenuContent(Graphics& g, int w, int h)
+{
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+    g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+
+    const float sc = g_menuScale;
+    const Color text = g_menuDark ? Color(255, 0xF4, 0xF7, 0xFA) : Color(255, 0x1B, 0x22, 0x28);
+    const Color secondary = g_menuDark ? Color(255, 0xB9, 0xC4, 0xCE) : Color(255, 0x5E, 0x69, 0x73);
+    const Color disabled = g_menuDark ? Color(135, 0xB9, 0xC4, 0xCE) : Color(125, 0x5E, 0x69, 0x73);
+    const Color accent = g_menuDark ? MemColor(g_memLoad)
+                                    : Color(255, 0x08, 0x7A, 0x8E);
+    const Color border = g_menuDark ? Color(42, 0xFF, 0xFF, 0xFF) : Color(34, 0x00, 0x00, 0x00);
+    const Color hover = g_menuDark ? Color(25, 0xFF, 0xFF, 0xFF) : Color(20, 0x00, 0x00, 0x00);
+    const Color separator = g_menuDark ? Color(28, 0xFF, 0xFF, 0xFF) : Color(23, 0x00, 0x00, 0x00);
+
+    float x = (float)g_menuShadow;
+    float y = (float)g_menuShadow;
+    float panelW = (float)g_menuContentW;
+    float panelH = (float)g_menuContentH;
+    float radius = 8.0f * sc;
+
+    // 背景由父窗口的 WCA Acrylic 提供;覆盖层只保留极淡的品牌光泽。
+    LinearGradientBrush glow(PointF(x, y), PointF(x + panelW, y + panelH),
+                             Color(8, 0x4C, 0xC9, 0xF0), Color(0, 0x4C, 0xC9, 0xF0));
+    FillRoundedPanel(g, x, y, panelW, panelH, radius, radius, radius, radius, glow);
+
+    Pen borderPen(border, 1.0f * sc);
+    StrokeRoundedPanel(g, x + 0.5f * sc, y + 0.5f * sc,
+                       panelW - 1.0f * sc, panelH - 1.0f * sc,
+                       radius, radius, radius, radius, borderPen);
+
+    // 右上角的细高光,增强磨砂玻璃的层次。
+    Pen highlight(Color(g_menuDark ? 20 : 55, 0xFF, 0xFF, 0xFF), 1.0f * sc);
+    g.DrawLine(&highlight, x + 13.0f * sc, y + 1.0f * sc,
+               x + panelW - 13.0f * sc, y + 1.0f * sc);
+
+    // 标题区:四根彩色信号柱作为品牌标记。
+    float barsX = x + 14.0f * sc;
+    float barsBase = y + 27.0f * sc;
+    const float heights[4] = {5.0f, 8.0f, 11.0f, 14.0f};
+    const Color barColors[4] = {
+        Color(255, 0x4C, 0xC9, 0xF0),
+        Color(255, 0x55, 0xD6, 0x98),
+        Color(255, 0xFF, 0xC8, 0x4C),
+        Color(255, 0xFF, 0x79, 0x7A)
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        SolidBrush bar(barColors[i]);
+        float barX = barsX + i * 4.0f * sc;
+        float barH = heights[i] * sc;
+        FillRoundedPanel(g, barX, barsBase - barH, 2.5f * sc, barH,
+                         1.1f * sc, 1.1f * sc, 1.1f * sc, 1.1f * sc, bar);
+    }
+
+    Font titleFont(L"Segoe UI", 12.5f * sc, FontStyleBold, UnitPixel, nullptr);
+    Font versionFont(L"Segoe UI", 9.5f * sc, FontStyleRegular, UnitPixel, nullptr);
+    Font itemFont(L"Segoe UI", 12.0f * sc, FontStyleRegular, UnitPixel, nullptr);
+    SolidBrush textBrush(text);
+    SolidBrush secondaryBrush(secondary);
+    SolidBrush disabledBrush(disabled);
+    SolidBrush accentBrush(accent);
+    StringFormat left; left.SetAlignment(StringAlignmentNear); left.SetLineAlignment(StringAlignmentCenter);
+    StringFormat right; right.SetAlignment(StringAlignmentFar); right.SetLineAlignment(StringAlignmentCenter);
+
+    RectF titleRect(x + 34.0f * sc, y + 4.0f * sc, 120.0f * sc, 28.0f * sc);
+    g.DrawString(L"Perch", -1, &titleFont, titleRect, &left, &textBrush);
+    RectF versionRect(x + 135.0f * sc, y + 6.0f * sc,
+                      panelW - 149.0f * sc, 24.0f * sc);
+    g.DrawString(kAppVersion, -1, &versionFont, versionRect, &right, &secondaryBrush);
+
+    for (size_t i = 0; i < g_menuRows.size(); ++i)
+    {
+        const MenuRowLayout& row = g_menuRows[i];
+        const MenuItemModel& item = g_menuItems[row.itemIndex];
+        if (i > 0 && MenuGroupBreakAfter(g_menuItems[i - 1].command))
+        {
+            float sepY = (float)row.rect.top - 4.5f * sc;
+            Pen sep(separator, 1.0f * sc);
+            g.DrawLine(&sep, x + 12.0f * sc, sepY, x + panelW - 12.0f * sc, sepY);
+        }
+
+        if ((int)i == g_menuHover && item.enabled)
+        {
+            SolidBrush hoverBrush(hover);
+            FillRoundedPanel(g, (float)row.rect.left + 1.0f * sc,
+                             (float)row.rect.top + 1.0f * sc,
+                             (float)(row.rect.right - row.rect.left) - 2.0f * sc,
+                             (float)(row.rect.bottom - row.rect.top) - 2.0f * sc,
+                             4.0f * sc, 4.0f * sc, 4.0f * sc, 4.0f * sc, hoverBrush);
+        }
+
+        Color itemColor = item.enabled ? text : disabled;
+        float rowCy = ((float)row.rect.top + (float)row.rect.bottom) * 0.5f;
+        float iconCx = x + 24.0f * sc;
+        MenuDrawIcon(g, item.icon, iconCx, rowCy, sc, itemColor, accent);
+
+        SolidBrush rowText(itemColor);
+        RectF labelRect(x + 40.0f * sc, (float)row.rect.top,
+                        panelW - 67.0f * sc, 28.0f * sc);
+        g.DrawString(item.label, -1, &itemFont, labelRect, &left, &rowText);
+
+        if (item.checked && item.enabled)
+        {
+            MenuDrawFluentGlyph(g, L"\uE73E", 11.5f * sc,
+                                RectF(x + panelW - 27.0f * sc, (float)row.rect.top,
+                                      16.0f * sc, 28.0f * sc),
+                                accent);
+        }
+    }
+}
+
+static void RenderMenu()
+{
+    if (!g_menuOverlay) return;
+    RECT rc{};
+    GetClientRect(g_menuOverlay, &rc);
+    int w = rc.right, h = rc.bottom;
+    if (w <= 0 || h <= 0) return;
+
+    const int ss = 3;
+    HDC screen = GetDC(nullptr);
+    BITMAPINFO bmiBig{};
+    bmiBig.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmiBig.bmiHeader.biWidth = w * ss;
+    bmiBig.bmiHeader.biHeight = -h * ss;
+    bmiBig.bmiHeader.biPlanes = 1;
+    bmiBig.bmiHeader.biBitCount = 32;
+    bmiBig.bmiHeader.biCompression = BI_RGB;
+    void* bitsBig = nullptr;
+    HBITMAP dibBig = CreateDIBSection(screen, &bmiBig, DIB_RGB_COLORS, &bitsBig, nullptr, 0);
+    if (!dibBig || !bitsBig)
+    {
+        if (dibBig) DeleteObject(dibBig);
+        ReleaseDC(nullptr, screen);
+        return;
+    }
+    HDC memBig = CreateCompatibleDC(screen);
+    HBITMAP oldBig = (HBITMAP)SelectObject(memBig, dibBig);
+    {
+        Graphics g(memBig);
+        g.Clear(Color(0, 0, 0, 0));
+        g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+        g.ScaleTransform((REAL)ss, (REAL)ss);
+        DrawMenuContent(g, w, h);
+    }
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!dib || !bits)
+    {
+        SelectObject(memBig, oldBig);
+        DeleteDC(memBig);
+        DeleteObject(dibBig);
+        ReleaseDC(nullptr, screen);
+        return;
+    }
+    HDC mem = CreateCompatibleDC(screen);
+    HBITMAP oldb = (HBITMAP)SelectObject(mem, dib);
+    {
+        const int n = ss * ss, sw = w * ss;
+        const BYTE* s = (const BYTE*)bitsBig;
+        BYTE* d = (BYTE*)bits;
+        for (int py = 0; py < h; ++py)
+        {
+            for (int px = 0; px < w; ++px)
+            {
+                int sa = 0, sr = 0, sg = 0, sb = 0;
+                for (int j = 0; j < ss; ++j)
+                {
+                    for (int k = 0; k < ss; ++k)
+                    {
+                        const BYTE* p = s + (((size_t)(py * ss + j) * sw) + (size_t)(px * ss + k)) * 4;
+                        int a = p[3];
+                        sa += a;
+                        sb += p[0] * a / 255;
+                        sg += p[1] * a / 255;
+                        sr += p[2] * a / 255;
+                    }
+                }
+                BYTE* o = d + ((size_t)py * w + px) * 4;
+                o[0] = (BYTE)(sb / n);
+                o[1] = (BYTE)(sg / n);
+                o[2] = (BYTE)(sr / n);
+                o[3] = (BYTE)(sa / n);
+            }
+        }
+    }
+
+    POINT src{0, 0};
+    SIZE size{w, h};
+    BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    UpdateLayeredWindow(g_menuOverlay, screen, nullptr, &size, mem, &src, 0, &blend, ULW_ALPHA);
+
+    SelectObject(mem, oldb);
+    DeleteDC(mem);
+    DeleteObject(dib);
+    SelectObject(memBig, oldBig);
+    DeleteDC(memBig);
+    DeleteObject(dibBig);
+    ReleaseDC(nullptr, screen);
+}
+
+static LRESULT CALLBACK MenuOverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg)
+    {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT:
+        {
+            PAINTSTRUCT ps{};
+            BeginPaint(hwnd, &ps);
+            EndPaint(hwnd, &ps);
+            RenderMenu();
+            return 0;
+        }
+        case WM_NCHITTEST:
+            return HTTRANSPARENT;
+        case WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static void CloseCustomMenu()
+{
+    if (!g_menuHwnd) return;
+    g_menuClosing = true;
+    HWND menu = g_menuHwnd;
+    HWND overlay = g_menuOverlay;
+    g_menuHwnd = nullptr;
+    g_menuOverlay = nullptr;
+    if (GetCapture() == menu) ReleaseCapture();
+    if (overlay) DestroyWindow(overlay);
+    DestroyWindow(menu);
+}
+
+static void ExecuteCustomMenu(int itemIndex)
+{
+    if (itemIndex < 0 || itemIndex >= (int)g_menuItems.size()) return;
+    const MenuItemModel item = g_menuItems[itemIndex];
+    if (!item.enabled) return;
+    CloseCustomMenu();
+    HandleMenuCommand(item.command);
+}
+
+static void PositionMenuOverlay()
+{
+    if (!g_menuHwnd || !g_menuOverlay) return;
+    RECT client{};
+    GetClientRect(g_menuHwnd, &client);
+    POINT origin{0, 0};
+    ClientToScreen(g_menuHwnd, &origin);
+    SetWindowPos(g_menuOverlay, HWND_TOPMOST, origin.x, origin.y,
+                 client.right, client.bottom,
+                 SWP_NOACTIVATE);
+}
+
+static LRESULT CALLBACK MenuWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg)
+    {
+        case WM_CREATE:
+            g_menuBackdropOk = ApplyMenuBackdrop(hwnd);
+            return 0;
+        case WM_SIZE:
+            PositionMenuOverlay();
+            if (g_menuOverlay) InvalidateRect(g_menuOverlay, nullptr, FALSE);
+            return 0;
+        case WM_MOVE:
+            PositionMenuOverlay();
+            return 0;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT:
+        {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            if (!g_menuBackdropOk)
+            {
+                RECT rc{};
+                GetClientRect(hwnd, &rc);
+                COLORREF color = g_menuDark ? RGB(0x20, 0x24, 0x2A)
+                                            : RGB(0xF8, 0xF6, 0xF4);
+                HBRUSH brush = CreateSolidBrush(color);
+                FillRect(dc, &rc, brush);
+                DeleteObject(brush);
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_MOUSEMOVE:
+        {
+            if (!g_menuTrackingMouse)
+            {
+                TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, hwnd, 0};
+                TrackMouseEvent(&track);
+                g_menuTrackingMouse = true;
+            }
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            MenuRowLayout* row = MenuRowAt(x, y);
+            int hover = (row && row->enabled) ? (int)(row - g_menuRows.data()) : -1;
+            if (hover != g_menuHover)
+            {
+                g_menuHover = hover;
+                if (g_menuOverlay) InvalidateRect(g_menuOverlay, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_MOUSELEAVE:
+            g_menuTrackingMouse = false;
+            if (g_menuHover != -1)
+            {
+                g_menuHover = -1;
+                if (g_menuOverlay) InvalidateRect(g_menuOverlay, nullptr, FALSE);
+            }
+            return 0;
+        case WM_LBUTTONDOWN:
+        {
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            MenuRowLayout* row = MenuRowAt(x, y);
+            if (!row)
+            {
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                return 0;
+            }
+            g_menuMouseDown = row->enabled ? (int)(row - g_menuRows.data()) : -1;
+            return 0;
+        }
+        case WM_LBUTTONUP:
+        {
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            MenuRowLayout* row = MenuRowAt(x, y);
+            int index = row ? (int)(row - g_menuRows.data()) : -1;
+            if (index >= 0 && index == g_menuMouseDown && row->enabled)
+                ExecuteCustomMenu(g_menuRows[index].itemIndex);
+            g_menuMouseDown = -1;
+            return 0;
+        }
+        case WM_RBUTTONDOWN:
+        case WM_MBUTTONDOWN:
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        case WM_SETCURSOR:
+        {
+            POINT pt{};
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            MenuRowLayout* row = MenuRowAt(pt.x, pt.y);
+            SetCursor(LoadCursorW(nullptr, (row && row->enabled) ? IDC_HAND : IDC_ARROW));
+            return TRUE;
+        }
+        case WM_KEYDOWN:
+            switch (wp)
+            {
+                case VK_ESCAPE:
+                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    return 0;
+                case VK_UP:
+                    g_menuHover = MenuNextEnabled(g_menuHover < 0 ? MenuFirstEnabled() : g_menuHover, -1);
+                    if (g_menuOverlay) InvalidateRect(g_menuOverlay, nullptr, FALSE);
+                    return 0;
+                case VK_DOWN:
+                case VK_TAB:
+                    g_menuHover = MenuNextEnabled(g_menuHover < 0 ? MenuFirstEnabled() : g_menuHover, 1);
+                    if (g_menuOverlay) InvalidateRect(g_menuOverlay, nullptr, FALSE);
+                    return 0;
+                case VK_HOME:
+                    g_menuHover = MenuFirstEnabled();
+                    if (g_menuOverlay) InvalidateRect(g_menuOverlay, nullptr, FALSE);
+                    return 0;
+                case VK_END:
+                    g_menuHover = MenuNextEnabled(-1, -1);
+                    if (g_menuOverlay) InvalidateRect(g_menuOverlay, nullptr, FALSE);
+                    return 0;
+                case VK_RETURN:
+                case VK_SPACE:
+                    if (g_menuHover >= 0 && g_menuHover < (int)g_menuRows.size())
+                        ExecuteCustomMenu(g_menuRows[g_menuHover].itemIndex);
+                    return 0;
+            }
+            break;
+        case WM_ACTIVATE:
+            if (LOWORD(wp) == WA_INACTIVE && g_menuEverActive)
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            else if (LOWORD(wp) != WA_INACTIVE)
+                g_menuEverActive = true;
+            return 0;
+        case WM_DPICHANGED:
+        case WM_DISPLAYCHANGE:
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        case WM_CLOSE:
+            if (!g_menuClosing) CloseCustomMenu();
+            return 0;
+        case WM_DESTROY:
+            if (GetCapture() == hwnd) ReleaseCapture();
+            g_menuRows.clear();
+            g_menuItems.clear();
+            g_menuOverlay = nullptr;
+            g_menuBackdropOk = false;
+            g_menuHover = -1;
+            g_menuMouseDown = -1;
+            g_menuTrackingMouse = false;
+            g_menuEverActive = false;
+            g_menuClosing = false;
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static bool EnsureMenuWindowClass()
+{
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    WNDCLASSW existing{};
+    if (!GetClassInfoW(instance, kMenuClass, &existing))
+    {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = MenuWndProc;
+        wc.hInstance = instance;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = kMenuClass;
+        if (!RegisterClassW(&wc)) return false;
+    }
+
+    existing = {};
+    if (!GetClassInfoW(instance, kMenuOverlayClass, &existing))
+    {
+        WNDCLASSW overlay{};
+        overlay.lpfnWndProc = MenuOverlayWndProc;
+        overlay.hInstance = instance;
+        overlay.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        overlay.lpszClassName = kMenuOverlayClass;
+        if (!RegisterClassW(&overlay)) return false;
+    }
+    return true;
+}
+
 static void ShowMenu()
 {
-    HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING, 10, L"Dock left");
-    AppendMenuW(menu, MF_STRING, 11, L"Dock right");
-    AppendMenuW(menu, MF_STRING, 12, L"Dock top");
-    AppendMenuW(menu, MF_STRING, 13, L"Dock bottom");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING | (g_topmost ? MF_CHECKED : 0), 20, L"Always on top");
-    AppendMenuW(menu, MF_STRING | (IsAutoStart() ? MF_CHECKED : 0), 21, L"Start with Windows");
-    AppendMenuW(menu, MF_STRING | (g_showTray ? MF_CHECKED : 0), 25, L"Tray icon");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    // 托盘图标关掉后,"隐藏到托盘"会把唯一入口也藏掉,所以此时禁用这一项
-    AppendMenuW(menu, MF_STRING | (g_showTray ? 0 : MF_GRAYED), 22, L"Hide to tray");
-    AppendMenuW(menu, MF_STRING, 23, L"Exit");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 24, L"About Perch");
+    if (!EnsureMenuWindowClass()) return;
+    if (g_menuHwnd) CloseCustomMenu();
+
+    g_menuDark = !ReadThemeDword(L"AppsUseLightTheme", 0);
+    g_menuTransparency = ReadThemeDword(L"EnableTransparency", 1);
+    g_menuHover = -1;
+    g_menuMouseDown = -1;
+    g_menuTrackingMouse = false;
+    g_menuBackdropOk = false;
+    g_menuEverActive = false;
+    g_menuClosing = false;
+
+    g_menuItems = {
+        {10, L"Dock left",         MenuIcon::DockLeft,   g_mode == Mode::DockLeft,   true},
+        {11, L"Dock right",        MenuIcon::DockRight,  g_mode == Mode::DockRight,  true},
+        {12, L"Dock top",          MenuIcon::DockTop,    g_mode == Mode::DockTop,    true},
+        {13, L"Dock bottom",       MenuIcon::DockBottom, g_mode == Mode::DockBottom, true},
+        {20, L"Always on top",     MenuIcon::Pin,        g_topmost,                  true},
+        {21, L"Start with Windows",MenuIcon::Startup,    IsAutoStart(),              true},
+        {25, L"Tray icon",         MenuIcon::Tray,       g_showTray,                 true},
+        // 托盘图标关闭后,隐藏到托盘会让组件失去唯一的恢复入口。
+        {22, L"Hide to tray",      MenuIcon::Hide,       false,                      g_showTray},
+        {23, L"Exit Perch",        MenuIcon::Exit,       false,                      true},
+        {24, L"About Perch",       MenuIcon::About,      false,                      true}
+    };
+
     POINT pt; GetCursorPos(&pt);
-    SetForegroundWindow(g_hwnd);
-    int cmd = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, nullptr);
-    DestroyMenu(menu);
-    if (cmd) HandleMenuCommand(cmd);
+    HMONITOR monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    UINT dpi = MenuDpiForMonitor(monitor);
+    g_menuScale = (dpi ? dpi : 96) / 96.0f;
+    g_menuContentW = Px(236.0f * g_menuScale);
+    g_menuContentH = Px(MenuContentHeightLogical() * g_menuScale);
+    g_menuShadow = 0;
+    int windowW = g_menuContentW + g_menuShadow * 2;
+    int windowH = g_menuContentH + g_menuShadow * 2;
+
+    MONITORINFO monitorInfo{};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    GetMonitorInfoW(monitor, &monitorInfo);
+    const RECT& work = monitorInfo.rcWork;
+    int x = pt.x;
+    int y = pt.y;
+    int edge = Px(8.0f * g_menuScale);
+    if (x + g_menuContentW > work.right - edge) x = pt.x - g_menuContentW;
+    if (y + g_menuContentH > work.bottom - edge) y = pt.y - g_menuContentH;
+    x = clamp(x, work.left + edge, work.right - g_menuContentW - edge);
+    y = clamp(y, work.top + edge, work.bottom - g_menuContentH - edge);
+
+    RebuildMenuLayout();
+    g_menuHwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+        kMenuClass, L"Perch menu", WS_POPUP,
+        x - g_menuShadow, y - g_menuShadow, windowW, windowH,
+        g_hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!g_menuHwnd) return;
+
+    g_menuOverlay = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE |
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+        kMenuOverlayClass, L"Perch menu content", WS_POPUP,
+        x, y, windowW, windowH,
+        g_menuHwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!g_menuOverlay)
+    {
+        DestroyWindow(g_menuHwnd);
+        g_menuHwnd = nullptr;
+        return;
+    }
+
+    RenderMenu();
+    ShowWindow(g_menuHwnd, SW_SHOW);
+    ShowWindow(g_menuOverlay, SW_SHOWNOACTIVATE);
+    SetWindowPos(g_menuOverlay, HWND_TOPMOST, x, y, windowW, windowH,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    SetForegroundWindow(g_menuHwnd);
+    SetFocus(g_menuHwnd);
+    SetCapture(g_menuHwnd);
 }
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
