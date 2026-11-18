@@ -1026,7 +1026,7 @@ static void SetAutoStart(bool on)
     }
 }
 
-static const wchar_t* kAppVersion = L"3.3.0";
+static const wchar_t* kAppVersion = L"3.3.1";
 
 static void ShowAbout()
 {
@@ -1054,7 +1054,6 @@ static void HandleMenuCommand(int cmd)
             SetWindowPos(g_hwnd, g_topmost?HWND_TOPMOST:HWND_NOTOPMOST, 0,0,0,0, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
             break;
         case 21: SetAutoStart(!IsAutoStart()); break;
-        case 22: ShowWindow(g_hwnd, SW_HIDE); break;
         case 23: PostMessageW(g_hwnd, WM_CLOSE, 0, 0); break;
         case 24: ShowAbout(); break;
         case 25: SetShowTray(!g_showTray); break;
@@ -1071,9 +1070,7 @@ enum class MenuIcon
     Pin,
     Startup,
     Tray,
-    Hide,
-    Exit,
-    About
+    Exit
 };
 
 struct MenuItemModel
@@ -1098,6 +1095,7 @@ static HWND g_menuHwnd = nullptr;
 static HWND g_menuOverlay = nullptr;
 static std::vector<MenuItemModel> g_menuItems;
 static std::vector<MenuRowLayout> g_menuRows;
+static RECT g_menuHeaderRect{};
 static float g_menuScale = 1.0f;
 static int g_menuShadow = 0;
 static int g_menuContentW = 0;
@@ -1187,6 +1185,10 @@ static void RebuildMenuLayout()
     const float rowX = (float)g_menuShadow + 4.0f * sc;
     const float rowW = (float)g_menuContentW - 8.0f * sc;
     float y = (float)g_menuShadow + 4.0f * sc + 32.0f * sc;
+    g_menuHeaderRect.left = Px(rowX);
+    g_menuHeaderRect.top = Px(y - 32.0f * sc);
+    g_menuHeaderRect.right = Px(rowX + rowW);
+    g_menuHeaderRect.bottom = Px(y);
 
     for (size_t i = 0; i < g_menuItems.size(); ++i)
     {
@@ -1255,14 +1257,12 @@ static wchar_t MenuFluentGlyph(MenuIcon icon)
     {
         case MenuIcon::DockLeft:   return L'\uE90C';
         case MenuIcon::DockRight:  return L'\uE90D';
-        case MenuIcon::DockTop:    return L'\uE952';
+        case MenuIcon::DockTop:    return L'\uE90E';
         case MenuIcon::DockBottom: return L'\uE90E';
         case MenuIcon::Pin:        return L'\uE718';
         case MenuIcon::Startup:    return L'\uE7E8';
         case MenuIcon::Tray:       return L'\uE770';
-        case MenuIcon::Hide:       return L'\uE9A9';
         case MenuIcon::Exit:       return L'\uE8BB';
-        case MenuIcon::About:      return L'\uE946';
     }
     return L'\uE946';
 }
@@ -1282,10 +1282,18 @@ static void MenuDrawIcon(Graphics& g, MenuIcon icon, float cx, float cy, float s
                          const Color& color, const Color& accent)
 {
     (void)accent;
+    GraphicsState state = g.Save();
+    if (icon == MenuIcon::DockTop)
+    {
+        g.TranslateTransform(cx, cy);
+        g.RotateTransform(180.0f);
+        g.TranslateTransform(-cx, -cy);
+    }
     const wchar_t glyph[2] = {MenuFluentGlyph(icon), 0};
     MenuDrawFluentGlyph(g, glyph, 14.5f * sc,
                         RectF(cx - 8.0f * sc, cy - 9.0f * sc, 16.0f * sc, 18.0f * sc),
                         color);
+    g.Restore(state);
 }
 
 static void DrawMenuContent(Graphics& g, int w, int h)
@@ -1324,6 +1332,18 @@ static void DrawMenuContent(Graphics& g, int w, int h)
     Pen highlight(Color(g_menuDark ? 20 : 55, 0xFF, 0xFF, 0xFF), 1.0f * sc);
     g.DrawLine(&highlight, x + 13.0f * sc, y + 1.0f * sc,
                x + panelW - 13.0f * sc, y + 1.0f * sc);
+
+    if (g_menuHover == -2)
+    {
+        SolidBrush headerHover(hover);
+        FillRoundedPanel(g,
+                         (float)g_menuHeaderRect.left + 1.0f * sc,
+                         (float)g_menuHeaderRect.top + 1.0f * sc,
+                         (float)(g_menuHeaderRect.right - g_menuHeaderRect.left) - 2.0f * sc,
+                         (float)(g_menuHeaderRect.bottom - g_menuHeaderRect.top) - 2.0f * sc,
+                         4.0f * sc, 4.0f * sc, 4.0f * sc, 4.0f * sc,
+                         headerHover);
+    }
 
     // 标题区:四根彩色信号柱作为品牌标记。
     float barsX = x + 14.0f * sc;
@@ -1598,7 +1618,10 @@ static LRESULT CALLBACK MenuWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
             MenuRowLayout* row = MenuRowAt(x, y);
-            int hover = (row && row->enabled) ? (int)(row - g_menuRows.data()) : -1;
+            POINT point{x, y};
+            int hover = PtInRect(&g_menuHeaderRect, point)
+                ? -2
+                : ((row && row->enabled) ? (int)(row - g_menuRows.data()) : -1);
             if (hover != g_menuHover)
             {
                 g_menuHover = hover;
@@ -1617,6 +1640,12 @@ static LRESULT CALLBACK MenuWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case WM_LBUTTONDOWN:
         {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            POINT point{x, y};
+            if (PtInRect(&g_menuHeaderRect, point))
+            {
+                g_menuMouseDown = -2;
+                return 0;
+            }
             MenuRowLayout* row = MenuRowAt(x, y);
             if (!row)
             {
@@ -1629,6 +1658,13 @@ static LRESULT CALLBACK MenuWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case WM_LBUTTONUP:
         {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            POINT point{x, y};
+            if (g_menuMouseDown == -2 && PtInRect(&g_menuHeaderRect, point))
+            {
+                CloseCustomMenu();
+                HandleMenuCommand(24);
+                return 0;
+            }
             MenuRowLayout* row = MenuRowAt(x, y);
             int index = row ? (int)(row - g_menuRows.data()) : -1;
             if (index >= 0 && index == g_menuMouseDown && row->enabled)
@@ -1646,7 +1682,10 @@ static LRESULT CALLBACK MenuWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             GetCursorPos(&pt);
             ScreenToClient(hwnd, &pt);
             MenuRowLayout* row = MenuRowAt(pt.x, pt.y);
-            SetCursor(LoadCursorW(nullptr, (row && row->enabled) ? IDC_HAND : IDC_ARROW));
+            SetCursor(LoadCursorW(nullptr,
+                                  (PtInRect(&g_menuHeaderRect, pt) || (row && row->enabled))
+                                      ? IDC_HAND
+                                      : IDC_ARROW));
             return TRUE;
         }
         case WM_KEYDOWN:
@@ -1674,6 +1713,12 @@ static LRESULT CALLBACK MenuWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     return 0;
                 case VK_RETURN:
                 case VK_SPACE:
+                    if (g_menuHover == -2)
+                    {
+                        CloseCustomMenu();
+                        HandleMenuCommand(24);
+                        return 0;
+                    }
                     if (g_menuHover >= 0 && g_menuHover < (int)g_menuRows.size())
                         ExecuteCustomMenu(g_menuRows[g_menuHover].itemIndex);
                     return 0;
@@ -1757,10 +1802,7 @@ static void ShowMenu()
         {20, L"Always on top",     MenuIcon::Pin,        g_topmost,                  true},
         {21, L"Start with Windows",MenuIcon::Startup,    IsAutoStart(),              true},
         {25, L"Tray icon",         MenuIcon::Tray,       g_showTray,                 true},
-        // 托盘图标关闭后,隐藏到托盘会让组件失去唯一的恢复入口。
-        {22, L"Hide to tray",      MenuIcon::Hide,       false,                      g_showTray},
-        {23, L"Exit Perch",        MenuIcon::Exit,       false,                      true},
-        {24, L"About Perch",       MenuIcon::About,      false,                      true}
+        {23, L"Exit Perch",        MenuIcon::Exit,       false,                      true}
     };
 
     POINT pt; GetCursorPos(&pt);
