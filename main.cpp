@@ -238,6 +238,7 @@ static const wchar_t* kStateEdge = L"DockEdge";
 static const wchar_t* kStateX = L"DockX";
 static const wchar_t* kStateY = L"DockY";
 static const wchar_t* kStateTray = L"ShowTrayIcon";
+static const int kPathMax = 2048;
 
 static const int CW_FLOAT = 40, CW_DOCK = 36, CH = 192;
 // 顶部/底部吸附用横向条:更宽更矮
@@ -967,66 +968,162 @@ static void ToggleVisible()
     else { ShowWindow(g_hwnd, SW_SHOW); SetForegroundWindow(g_hwnd); }
 }
 
-static void EnsureStartupShortcut(bool create)
+static bool GetStartupShortcutPath(wchar_t* path, size_t capacity)
 {
     wchar_t startDir[MAX_PATH];
-    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_STARTUP, nullptr, SHGFP_TYPE_CURRENT, startDir);
-    if (FAILED(hr)) return;
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_STARTUP, nullptr, SHGFP_TYPE_CURRENT, startDir)))
+        return false;
+    return swprintf_s(path, capacity, L"%s\\Perch.lnk", startDir) > 0;
+}
+
+static bool StartupShortcutExists()
+{
     wchar_t lnk[MAX_PATH + 16];
-    int l = (int)wcslen(startDir);
-    for (int i = 0; i < l; ++i) lnk[i] = startDir[i];
-    lnk[l] = L'\\';
-    wcscpy(lnk + l + 1, L"Perch.lnk");
+    if (!GetStartupShortcutPath(lnk, MAX_PATH + 16)) return false;
+    DWORD attrs = GetFileAttributesW(lnk);
+    return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
 
-    if (!create) { DeleteFileW(lnk); return; }
+static bool RemoveStartupShortcut()
+{
+    wchar_t lnk[MAX_PATH + 16];
+    if (!GetStartupShortcutPath(lnk, MAX_PATH + 16)) return false;
+    if (!StartupShortcutExists()) return true;
+    return DeleteFileW(lnk) != 0 || !StartupShortcutExists();
+}
 
-    wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
+static bool CreateStartupShortcut()
+{
+    wchar_t lnk[MAX_PATH + 16];
+    if (!GetStartupShortcutPath(lnk, MAX_PATH + 16)) return false;
+
+    wchar_t exe[kPathMax];
+    if (!GetModuleFileNameW(nullptr, exe, kPathMax)) return false;
+
     IShellLinkW* psl = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW, (void**)&psl))) return;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_IShellLinkW, (void**)&psl)))
+        return false;
+
     psl->SetPath(exe);
     psl->SetDescription(L"Perch");
     IPersistFile* pf = nullptr;
-    if (SUCCEEDED(psl->QueryInterface(IID_IPersistFile, (void**)&pf))) { pf->Save(lnk, TRUE); pf->Release(); }
+    bool saved = false;
+    if (SUCCEEDED(psl->QueryInterface(IID_IPersistFile, (void**)&pf)))
+    {
+        saved = SUCCEEDED(pf->Save(lnk, TRUE));
+        pf->Release();
+    }
     psl->Release();
+    return saved;
 }
+
+static bool ReadStartupShortcutTarget(wchar_t* target, size_t capacity)
+{
+    wchar_t lnk[MAX_PATH + 16];
+    if (!GetStartupShortcutPath(lnk, MAX_PATH + 16) || !StartupShortcutExists())
+        return false;
+
+    IShellLinkW* psl = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_IShellLinkW, (void**)&psl)))
+        return false;
+
+    bool loaded = false;
+    IPersistFile* pf = nullptr;
+    if (SUCCEEDED(psl->QueryInterface(IID_IPersistFile, (void**)&pf)))
+    {
+        loaded = SUCCEEDED(pf->Load(lnk, STGM_READ));
+        pf->Release();
+    }
+    if (loaded)
+        loaded = SUCCEEDED(psl->GetPath(target, (int)capacity, nullptr, 0)) && target[0] != 0;
+    psl->Release();
+    return loaded;
+}
+
+static bool HasRunAutoStart()
+{
+    wchar_t value[kPathMax];
+    DWORD size = sizeof(value);
+    return RegGetValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, RRF_RT_REG_SZ,
+                        nullptr, value, &size) == ERROR_SUCCESS;
+}
+
+static bool WriteRunAutoStart(const wchar_t* executable)
+{
+    if (!executable || !executable[0]) return false;
+
+    HKEY key = nullptr;
+    DWORD disposition = 0;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0,
+                        KEY_SET_VALUE, nullptr, &key, &disposition) != ERROR_SUCCESS)
+        return false;
+
+    wchar_t value[kPathMax + 4];
+    int length = swprintf_s(value, kPathMax + 4, L"\"%s\"", executable);
+    bool written = length > 0 &&
+        RegSetValueExW(key, kRunValue, 0, REG_SZ, (const BYTE*)value,
+                       (DWORD)((wcslen(value) + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
+    RegCloseKey(key);
+    return written;
+}
+
+static void RemoveRunAutoStart()
+{
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS)
+    {
+        RegDeleteValueW(key, kRunValue);
+        RegCloseKey(key);
+    }
+}
+
 static bool IsAutoStart()
 {
-    wchar_t buf[MAX_PATH]; DWORD sz = sizeof(buf);
-    LONG r = RegGetValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, RRF_RT_REG_SZ, nullptr, buf, &sz);
-    return r == ERROR_SUCCESS;
+    return HasRunAutoStart() || StartupShortcutExists();
+}
+
+static void NormalizeAutoStartEntry()
+{
+    if (!StartupShortcutExists()) return;
+
+    // 注册表优先。若旧版本只留下启动文件夹快捷方式,读取其目标后无损迁移。
+    if (HasRunAutoStart())
+    {
+        if (!RemoveStartupShortcut()) RemoveRunAutoStart();
+        return;
+    }
+
+    wchar_t target[kPathMax];
+    if (ReadStartupShortcutTarget(target, kPathMax) && WriteRunAutoStart(target))
+    {
+        if (!RemoveStartupShortcut()) RemoveRunAutoStart();
+    }
 }
 
 static void SetAutoStart(bool on)
 {
-    EnsureStartupShortcut(on);
-    HKEY k; DWORD disp;
-    if (on)
+    if (!on)
     {
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, &disp) == ERROR_SUCCESS)
-        {
-            const int kPathMax = 2048;
-            wchar_t exe[kPathMax]; GetModuleFileNameW(nullptr, exe, kPathMax);
-            wchar_t val[kPathMax+4];
-            int exl = (int)wcslen(exe);
-            val[0] = L'"';
-            for (int i = 0; i < exl; ++i) val[i+1] = exe[i];
-            val[exl+1] = L'"';
-            val[exl+2] = 0;
-            RegSetValueExW(k, kRunValue, 0, REG_SZ, (const BYTE*)val, (DWORD)((wcslen(val)+1)*sizeof(wchar_t)));
-            RegCloseKey(k);
-        }
+        RemoveRunAutoStart();
+        RemoveStartupShortcut();
+        return;
+    }
+
+    wchar_t exe[kPathMax];
+    if (GetModuleFileNameW(nullptr, exe, kPathMax) && WriteRunAutoStart(exe))
+    {
+        if (!RemoveStartupShortcut()) RemoveRunAutoStart();
     }
     else
     {
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &k) == ERROR_SUCCESS)
-        {
-            RegDeleteValueW(k, kRunValue);
-            RegCloseKey(k);
-        }
+        // 极少数无法写注册表的环境里保留一个启动文件夹入口作为回退。
+        if (CreateStartupShortcut()) RemoveRunAutoStart();
     }
 }
 
-static const wchar_t* kAppVersion = L"3.4.0";
+static const wchar_t* kAppVersion = L"3.5.0";
 
 static void ShowAbout()
 {
@@ -2003,7 +2100,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     g_showTray = ReadShowTray();
     if (g_showTray) AddTray(g_hwnd);
     ShowWindow(g_hwnd, SW_SHOW);
-    if (IsAutoStart()) EnsureStartupShortcut(true);
+    NormalizeAutoStartEntry();
     // 开机默认贴靠到上次用的边(默认右侧)
     RestoreDockState();
 
